@@ -1,0 +1,21 @@
+// for a description of the options see:
+// Code/EditorPlugins/Assets/EditorPluginAssets/Assets.plPluginBundle
+
+PluginInfo
+{
+	string %DisplayName{"VisualScript"}
+	string %Category{"Scripting"}
+	string %MinEngineVersion{"0.7.0"}
+	string %MaxEngineVersion{"0.7.0"}
+	string %Icon{"VisualScriptIcon.png"}
+    string %Banner{"VisualScriptBanner.png"}
+	string %Description{"Adds support for scripting via node based visual scripting."}
+	string %EditorPlugins{"plEditorPluginVisualScript"}
+	string %EditorEnginePlugins{}
+	string %RuntimePlugins{"plVisualScriptPlugin"}
+	string %PackageDependencies{}
+	string %RequiredPlugins{}
+	string %ExclusiveFeatures{}
+	string %EnabledInTemplates{"General2D", "General3D"}
+	string %PlasmaBuildTargetName{"VisualScriptPlugin"}
+}
