@@ -116,6 +116,64 @@ plVisualScriptDataType::Enum plVisualScriptTypeDeduction::DeductDummy(const plDo
 }
 
 // static
+plVisualScriptDataType::Enum plVisualScriptTypeDeduction::DeductFromRerouteConnections(const plDocumentObject* pObject, const plVisualScriptPin* pDisconnectedPin)
+{
+  auto pManager = static_cast<const plVisualScriptNodeManager*>(pObject->GetDocumentObjectManager());
+
+  plHybridArray<const plVisualScriptPin*, 4> pins;
+
+  pManager->GetInputDataPins(pObject, pins);
+  for (auto pPin : pins)
+  {
+    if (pPin == pDisconnectedPin)
+      continue;
+
+    auto connections = pManager->GetConnections(*pPin);
+    if (connections.IsEmpty())
+      continue;
+
+    auto type = static_cast<const plVisualScriptPin&>(connections[0]->GetSourcePin()).GetResolvedScriptDataType();
+    if (type != plVisualScriptDataType::Invalid)
+      return type;
+  }
+
+  pManager->GetOutputDataPins(pObject, pins);
+  for (auto pPin : pins)
+  {
+    auto connections = pManager->GetConnections(*pPin);
+    for (auto pConnection : connections)
+    {
+      if (&pConnection->GetTargetPin() == pDisconnectedPin)
+        continue;
+
+      auto& targetPin = static_cast<const plVisualScriptPin&>(pConnection->GetTargetPin());
+
+      // A target that itself deduces its type from us would report our previous type, skip those
+      if (targetPin.NeedsTypeDeduction())
+        continue;
+
+      auto type = targetPin.GetScriptDataType();
+      if (type != plVisualScriptDataType::Invalid && type != plVisualScriptDataType::Any && type != plVisualScriptDataType::AnyPointer)
+        return type;
+    }
+  }
+
+  return plVisualScriptDataType::Invalid;
+}
+
+// static
+plVisualScriptDataType::Enum plVisualScriptTypeDeduction::DeductFromPortalIn(const plDocumentObject* pObject, const plVisualScriptPin* pDisconnectedPin)
+{
+  auto pManager = static_cast<const plVisualScriptNodeManager*>(pObject->GetDocumentObjectManager());
+
+  const plDocumentObject* pPortalIn = pManager->FindPortalIn(pManager->GetPortalName(pObject), false);
+  if (pPortalIn == nullptr)
+    return plVisualScriptDataType::Invalid;
+
+  return pManager->GetDeductedType(pPortalIn);
+}
+
+// static
 const plRTTI* plVisualScriptTypeDeduction::GetReflectedType(const plDocumentObject* pObject)
 {
   auto typeVar = pObject->GetTypeAccessor().GetValue("Type");

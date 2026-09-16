@@ -28,6 +28,9 @@ namespace
   static plHashedString sArrayCategory = plMakeHashedString("Array");
   static plHashedString sMessagesCategory = plMakeHashedString("Messages");
   static plHashedString sEnumsCategory = plMakeHashedString("Enums");
+  static plHashedString sMiscCategory = plMakeHashedString("Misc");
+  static plHashedString sFunctionsCategory = plMakeHashedString("Functions");
+  static plHashedString sLibrariesCategory = plMakeHashedString("Libraries");
 
   const plRTTI* FindTopMostBaseClass(const plRTTI* pRtti)
   {
@@ -385,6 +388,16 @@ void plVisualScriptNodeRegistry::UpdateNodeTypes()
     desc.m_sPluginName = szPluginName;
     desc.m_sParentTypeName = plGetStaticRTTI<plReflectedClass>()->GetTypeName();
     desc.m_Flags = plTypeFlags::Phantom | plTypeFlags::Abstract | plTypeFlags::Class;
+
+    // Every node carries the sub-graph scope it belongs to (invalid = root graph). Hidden because the editor navigates scopes through the breadcrumb.
+    {
+      auto& propDesc = desc.m_Properties.ExpandAndGetRef();
+      propDesc.m_Category = plPropertyCategory::Member;
+      propDesc.m_sName = s_szScopeProperty;
+      propDesc.m_sType = plGetStaticRTTI<plUuid>()->GetTypeName();
+      propDesc.m_Flags = plPropertyFlags::StandardType;
+      propDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plHiddenAttribute));
+    }
 
     m_pBaseType = plPhantomRttiManager::RegisterType(desc);
   }
@@ -1543,6 +1556,243 @@ void plVisualScriptNodeRegistry::CreateBuiltinTypes()
 
     RegisterNodeType(typeDesc, std::move(nodeDesc), sCoroutinesCategory);
   }
+
+  CreateStructuralTypes();
+}
+
+const plVisualScriptNodeRegistry::PinDesc& plVisualScriptNodeRegistry::GetGenericPinDesc(plVisualScriptDataType::Enum dataType) const
+{
+  PL_ASSERT_DEV(dataType >= 0 && dataType < plVisualScriptDataType::Count, "Invalid data type for a declared pin");
+  return m_GenericPinDescs[dataType];
+}
+
+namespace
+{
+  void AddPinDeclArrayProperty(plReflectedTypeDescriptor& ref_typeDesc, plStringView sName, plUInt32 uiMaxCount)
+  {
+    auto& propDesc = ref_typeDesc.m_Properties.ExpandAndGetRef();
+    propDesc.m_Category = plPropertyCategory::Array;
+    propDesc.m_sName = sName;
+    propDesc.m_sType = plGetStaticRTTI<plVisualScriptPinDecl>()->GetTypeName();
+    propDesc.m_Flags = plPropertyFlags::Class;
+    propDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plMaxArraySizeAttribute, uiMaxCount));
+  }
+
+  void AddStringProperty(plReflectedTypeDescriptor& ref_typeDesc, plStringView sName, plStringView sDefault, plPropertyAttribute* pExtraAttribute = nullptr)
+  {
+    auto& propDesc = ref_typeDesc.m_Properties.ExpandAndGetRef();
+    propDesc.m_Category = plPropertyCategory::Member;
+    propDesc.m_sName = sName;
+    propDesc.m_sType = plGetStaticRTTI<plString>()->GetTypeName();
+    propDesc.m_Flags = plPropertyFlags::StandardType;
+
+    if (sDefault.IsEmpty() == false)
+    {
+      propDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plDefaultValueAttribute, plVariant(plString(sDefault))));
+    }
+
+    if (pExtraAttribute != nullptr)
+    {
+      propDesc.m_Attributes.PushBack(pExtraAttribute);
+    }
+  }
+} // namespace
+
+void plVisualScriptNodeRegistry::CreateStructuralTypes()
+{
+  const plColorGammaUB logicColor = PinDesc::GetColorForScriptDataType(plVisualScriptDataType::Invalid);
+  const plColorGammaUB functionColor = NiceColorFromName("Function");
+  const plColorGammaUB libraryColor = NiceColorFromName("Library");
+  const plColorGammaUB subGraphColor = NiceColorFromName("SubGraph");
+
+  // Pin descriptions for pins created from user declarations
+  for (plUInt32 i = 0; i < plVisualScriptDataType::Count; ++i)
+  {
+    const auto dataType = static_cast<plVisualScriptDataType::Enum>(i);
+    auto& pinDesc = m_GenericPinDescs[i];
+    pinDesc.m_ScriptDataType = dataType;
+    pinDesc.m_pDataType = dataType == plVisualScriptDataType::Invalid ? nullptr : plVisualScriptDataType::GetRtti(dataType);
+  }
+
+  plReflectedTypeDescriptor typeDesc;
+
+  // Builtin_Reroute
+  {
+    FillDesc(typeDesc, "Builtin_Reroute", logicColor);
+    AddInputProperty(typeDesc, "Kind", plGetStaticRTTI<plVisualScriptPinKind>(), plVisualScriptDataType::Int64);
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, ""));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = plVisualScriptNodeDescription::Type::Builtin_Reroute;
+    nodeDesc.m_bHasDynamicPins = true;
+    nodeDesc.m_DeductTypeFunc = &plVisualScriptTypeDeduction::DeductFromRerouteConnections;
+    nodeDesc.AddInputDataPin("In", nullptr, plVisualScriptDataType::Any, false, plMakeHashedString("Kind"));
+    nodeDesc.AddOutputDataPin("Out", nullptr, plVisualScriptDataType::Any, plMakeHashedString("Kind"));
+
+    m_pRerouteType = RegisterNodeType(typeDesc, std::move(nodeDesc), sMiscCategory);
+  }
+
+  // Portals: Builtin_PortalIn_Exec, Builtin_PortalIn_Data, Builtin_PortalOut_Exec, Builtin_PortalOut_Data
+  for (plUInt32 uiIn = 0; uiIn < 2; ++uiIn)
+  {
+    for (plUInt32 uiExec = 0; uiExec < 2; ++uiExec)
+    {
+      const bool bIn = uiIn == 1;
+      const bool bExec = uiExec == 1;
+
+      plStringBuilder sTypeName;
+      sTypeName.Set(bIn ? "Builtin_PortalIn_" : "Builtin_PortalOut_", bExec ? "Exec" : "Data");
+
+      FillDesc(typeDesc, sTypeName, logicColor);
+
+      plPropertyAttribute* pNameAttribute = nullptr;
+      if (bIn == false)
+      {
+        pNameAttribute = PL_DEFAULT_NEW(plDynamicStringEnumAttribute, bExec ? "VisualScriptPortalNames_Exec" : "VisualScriptPortalNames_Data");
+      }
+      AddStringProperty(typeDesc, "Name", bIn ? "Portal" : "", pNameAttribute);
+      typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, "{Name}"));
+
+      NodeDesc nodeDesc;
+      nodeDesc.m_Type = bIn ? plVisualScriptNodeDescription::Type::Builtin_PortalIn : plVisualScriptNodeDescription::Type::Builtin_PortalOut;
+
+      if (bExec)
+      {
+        if (bIn)
+          nodeDesc.AddInputExecutionPin("In");
+        else
+          nodeDesc.AddOutputExecutionPin("Out");
+      }
+      else if (bIn)
+      {
+        nodeDesc.m_DeductTypeFunc = &plVisualScriptTypeDeduction::DeductFromAllInputPins;
+        nodeDesc.AddInputDataPin("In", nullptr, plVisualScriptDataType::Any, true);
+      }
+      else
+      {
+        nodeDesc.m_DeductTypeFunc = &plVisualScriptTypeDeduction::DeductFromPortalIn;
+        nodeDesc.AddOutputDataPin("Out", nullptr, plVisualScriptDataType::Any);
+      }
+
+      m_pPortalTypes[uiIn][uiExec] = RegisterNodeType(typeDesc, std::move(nodeDesc), sMiscCategory);
+    }
+  }
+
+  // Builtin_SubGraph
+  {
+    FillDesc(typeDesc, "Builtin_SubGraph", subGraphColor);
+    AddStringProperty(typeDesc, "Name", "Sub-graph");
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, "{Name}"));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = plVisualScriptNodeDescription::Type::Builtin_SubGraph;
+    nodeDesc.m_bHasDynamicPins = true; // pins mirror the boundary nodes inside the sub-graph
+
+    m_pSubGraphType = RegisterNodeType(typeDesc, std::move(nodeDesc), sMiscCategory);
+  }
+
+  // Builtin_SubGraphInputs / Builtin_SubGraphOutputs: created by the editor when a sub-graph is entered, not offered in the menu
+  for (plUInt32 uiOutputs = 0; uiOutputs < 2; ++uiOutputs)
+  {
+    const bool bOutputs = uiOutputs == 1;
+
+    FillDesc(typeDesc, bOutputs ? "Builtin_SubGraphOutputs" : "Builtin_SubGraphInputs", subGraphColor);
+    AddPinDeclArrayProperty(typeDesc, "Pins", 32);
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, bOutputs ? "Outputs" : "Inputs"));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = bOutputs ? plVisualScriptNodeDescription::Type::Builtin_SubGraphOutputs : plVisualScriptNodeDescription::Type::Builtin_SubGraphInputs;
+    nodeDesc.m_bHasDynamicPins = true;
+    if (bOutputs)
+      nodeDesc.AddInputDataPin("Pin", nullptr, plVisualScriptDataType::Any, false, plMakeHashedString("Pins"));
+    else
+      nodeDesc.AddOutputDataPin("Pin", nullptr, plVisualScriptDataType::Any, plMakeHashedString("Pins"));
+
+    const plRTTI* pType = RegisterNodeType(typeDesc, std::move(nodeDesc), plHashedString(), false);
+    if (bOutputs)
+      m_pSubGraphOutputsType = pType;
+    else
+      m_pSubGraphInputsType = pType;
+  }
+
+  // FunctionEntry
+  {
+    FillDesc(typeDesc, "FunctionEntry", functionColor);
+    AddStringProperty(typeDesc, "Name", "NewFunction");
+    AddInputProperty(typeDesc, "CoroutineMode", plGetStaticRTTI<plScriptCoroutineCreationMode>(), plVisualScriptDataType::Int64);
+    AddPinDeclArrayProperty(typeDesc, "Inputs", 16);
+    AddPinDeclArrayProperty(typeDesc, "Outputs", 16);
+    {
+      // Reserved for externally callable functions; not supported yet
+      auto& propDesc = typeDesc.m_Properties.ExpandAndGetRef();
+      propDesc.m_Category = plPropertyCategory::Member;
+      propDesc.m_sName = "Public";
+      propDesc.m_sType = plGetStaticRTTI<bool>()->GetTypeName();
+      propDesc.m_Flags = plPropertyFlags::StandardType;
+      propDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plHiddenAttribute));
+    }
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, "Function::{Name}"));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = plVisualScriptNodeDescription::Type::FunctionEntry;
+    nodeDesc.m_bHasDynamicPins = true;
+    nodeDesc.AddOutputExecutionPin("");
+    nodeDesc.AddOutputDataPin("Input", nullptr, plVisualScriptDataType::Any, plMakeHashedString("Inputs"));
+
+    // created from the Functions panel, not from the node palette
+    m_pFunctionEntryType = RegisterNodeType(typeDesc, std::move(nodeDesc), sFunctionsCategory, false);
+  }
+
+  // Builtin_Return
+  {
+    FillDesc(typeDesc, "Builtin_Return", functionColor);
+    // The owning function, refreshed by the editor from the execution flow; drives which output pins the node shows
+    AddStringProperty(typeDesc, "Function", "", PL_DEFAULT_NEW(plHiddenAttribute));
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, "Return"));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = plVisualScriptNodeDescription::Type::Builtin_Return;
+    nodeDesc.m_bHasDynamicPins = true;
+    nodeDesc.AddInputExecutionPin("");
+    nodeDesc.AddInputDataPin("Output", nullptr, plVisualScriptDataType::Any, false, plMakeHashedString("Function"));
+
+    m_pReturnType = RegisterNodeType(typeDesc, std::move(nodeDesc), sFunctionsCategory);
+  }
+
+  // Builtin_Call
+  {
+    FillDesc(typeDesc, "Builtin_Call", functionColor);
+    AddStringProperty(typeDesc, "Function", "", PL_DEFAULT_NEW(plDynamicStringEnumAttribute, "VisualScriptFunctions"));
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, "Call::{Function}"));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = plVisualScriptNodeDescription::Type::Builtin_Call;
+    nodeDesc.m_bHasDynamicPins = true;
+    nodeDesc.AddInputExecutionPin("");
+    nodeDesc.AddOutputExecutionPin("");
+    nodeDesc.AddInputDataPin("Input", nullptr, plVisualScriptDataType::Any, false, plMakeHashedString("Function"));
+    nodeDesc.AddOutputDataPin("Output", nullptr, plVisualScriptDataType::Any, plMakeHashedString("Function"));
+
+    m_pCallType = RegisterNodeType(typeDesc, std::move(nodeDesc), sFunctionsCategory);
+  }
+
+  // Builtin_CallLibrary
+  {
+    FillDesc(typeDesc, "Builtin_CallLibrary", libraryColor);
+    AddStringProperty(typeDesc, "Library", "", PL_DEFAULT_NEW(plAssetBrowserAttribute, "CompatibleAsset_VisualScriptLibrary", plDependencyFlags::Transform | plDependencyFlags::Package));
+    AddStringProperty(typeDesc, "Function", "", PL_DEFAULT_NEW(plDynamicStringEnumAttribute, "VisualScriptLibraryFunctions"));
+    typeDesc.m_Attributes.PushBack(PL_DEFAULT_NEW(plTitleAttribute, "{Library}::{Function}"));
+
+    NodeDesc nodeDesc;
+    nodeDesc.m_Type = plVisualScriptNodeDescription::Type::Builtin_CallLibrary;
+    nodeDesc.m_bHasDynamicPins = true;
+    nodeDesc.AddInputExecutionPin("");
+    nodeDesc.AddOutputExecutionPin("");
+    nodeDesc.AddInputDataPin("Input", nullptr, plVisualScriptDataType::Any, false, plMakeHashedString("Library"));
+    nodeDesc.AddOutputDataPin("Output", nullptr, plVisualScriptDataType::Any, plMakeHashedString("Function"));
+
+    m_pCallLibraryType = RegisterNodeType(typeDesc, std::move(nodeDesc), sLibrariesCategory);
+  }
 }
 
 void plVisualScriptNodeRegistry::CreateGetOwnerNodeType(const plRTTI* pRtti)
@@ -2089,10 +2339,10 @@ void plVisualScriptNodeRegistry::FillDesc(plReflectedTypeDescriptor& desc, plStr
   }
 }
 
-const plRTTI* plVisualScriptNodeRegistry::RegisterNodeType(plReflectedTypeDescriptor& typeDesc, NodeDesc&& nodeDesc, const plHashedString& sCategory)
+const plRTTI* plVisualScriptNodeRegistry::RegisterNodeType(plReflectedTypeDescriptor& typeDesc, NodeDesc&& nodeDesc, const plHashedString& sCategory, bool bAddCreationTemplate /*= true*/)
 {
   const plRTTI* pRtti = plPhantomRttiManager::RegisterType(typeDesc);
-  if (m_TypeToNodeDescs.Insert(pRtti, std::move(nodeDesc)) == false)
+  if (m_TypeToNodeDescs.Insert(pRtti, std::move(nodeDesc)) == false && bAddCreationTemplate)
   {
     auto& nodeTemplate = m_NodeCreationTemplates.ExpandAndGetRef();
     nodeTemplate.m_pType = pRtti;

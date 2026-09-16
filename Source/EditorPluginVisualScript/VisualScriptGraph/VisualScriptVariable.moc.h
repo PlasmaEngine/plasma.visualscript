@@ -181,3 +181,68 @@ struct plVisualScriptExpressionVariable
 };
 
 PL_DECLARE_REFLECTABLE_TYPE(PL_EDITORPLUGINVISUALSCRIPT_DLL, plVisualScriptExpressionVariable);
+
+//////////////////////////////////////////////////////////////////////////
+
+/// \brief The type of a user-declared pin (sub-graph boundaries, function entries). Values match plVisualScriptDataType, Exec is the execution flow.
+struct plVisualScriptPinType
+{
+  using StorageType = plUInt8;
+
+  enum Enum
+  {
+    Exec = plVisualScriptDataType::Invalid,
+    Bool = plVisualScriptDataType::Bool,
+    Byte = plVisualScriptDataType::Byte,
+    Int = plVisualScriptDataType::Int,
+    Int64 = plVisualScriptDataType::Int64,
+    Float = plVisualScriptDataType::Float,
+    Double = plVisualScriptDataType::Double,
+    Color = plVisualScriptDataType::Color,
+    Vector3 = plVisualScriptDataType::Vector3,
+    Quaternion = plVisualScriptDataType::Quaternion,
+    Transform = plVisualScriptDataType::Transform,
+    Time = plVisualScriptDataType::Time,
+    Angle = plVisualScriptDataType::Angle,
+    String = plVisualScriptDataType::String,
+    HashedString = plVisualScriptDataType::HashedString,
+    GameObject = plVisualScriptDataType::GameObject,
+    Component = plVisualScriptDataType::Component,
+    TypedPointer = plVisualScriptDataType::TypedPointer,
+    Variant = plVisualScriptDataType::Variant,
+    Array = plVisualScriptDataType::Array,
+    Map = plVisualScriptDataType::Map,
+    Coroutine = plVisualScriptDataType::Coroutine,
+
+    Default = Float
+  };
+
+  static plVisualScriptDataType::Enum GetDataType(Enum type) { return static_cast<plVisualScriptDataType::Enum>(type); }
+};
+
+PL_DECLARE_REFLECTABLE_TYPE(PL_EDITORPLUGINVISUALSCRIPT_DLL, plVisualScriptPinType);
+
+/// \brief Whether a reroute node forwards data or execution flow.
+struct plVisualScriptPinKind
+{
+  using StorageType = plUInt8;
+
+  enum Enum
+  {
+    Data,
+    Exec,
+
+    Default = Data
+  };
+};
+
+PL_DECLARE_REFLECTABLE_TYPE(PL_EDITORPLUGINVISUALSCRIPT_DLL, plVisualScriptPinKind);
+
+/// \brief One user-declared pin: used by 'Sub-graph Inputs/Outputs' and by the Inputs/Outputs of a 'Function Entry'.
+struct plVisualScriptPinDecl
+{
+  plHashedString m_sName;
+  plEnum<plVisualScriptPinType> m_Type;
+};
+
+PL_DECLARE_REFLECTABLE_TYPE(PL_EDITORPLUGINVISUALSCRIPT_DLL, plVisualScriptPinDecl);

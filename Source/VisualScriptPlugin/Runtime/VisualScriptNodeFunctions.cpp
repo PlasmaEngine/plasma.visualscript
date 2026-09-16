@@ -1490,6 +1490,25 @@ namespace
 
   //////////////////////////////////////////////////////////////////////////
 
+  static ExecResult NodeFunction_Builtin_Call(plVisualScriptExecutionContext& inout_context, const plVisualScriptGraphDescription::Node& node)
+  {
+    auto& userData = node.GetUserData<NodeUserData_Call>();
+    if (userData.m_pFunctionDesc == nullptr)
+    {
+      plLog::Error("Unresolved visual script function call '{}{}{}'", userData.m_szLibraryId, plStringUtils::IsNullOrEmpty(userData.m_szLibraryId) ? "" : "::", userData.m_szFunctionName);
+      return ExecResult::Error();
+    }
+
+    return inout_context.PushFrame(userData.m_pFunctionDesc, userData.m_pConstantDataStorage, node);
+  }
+
+  static ExecResult NodeFunction_Builtin_Return(plVisualScriptExecutionContext& inout_context, const plVisualScriptGraphDescription::Node& node)
+  {
+    return inout_context.PopFrame(&node);
+  }
+
+  //////////////////////////////////////////////////////////////////////////
+
   struct ExecuteFunctionContext
   {
     plVisualScriptGraphDescription::ExecuteFunction m_Func = nullptr;
@@ -1502,6 +1521,8 @@ namespace
     {},                                                        // EntryCall_Coroutine,
     {},                                                        // MessageHandler,
     {},                                                        // MessageHandler_Coroutine,
+    {},                                                        // FunctionEntry,
+    {},                                                        // FunctionEntry_Coroutine,
     {&NodeFunction_ReflectedFunction},                         // ReflectedFunction,
     {nullptr, &NodeFunction_GetReflectedProperty_Getter},      // GetReflectedProperty,
     {nullptr, &NodeFunction_SetReflectedProperty_Getter},      // SetReflectedProperty,
@@ -1575,6 +1596,17 @@ namespace
     {&NodeFunction_Builtin_WaitForX<true>},                    // Builtin_WaitForAll,
     {&NodeFunction_Builtin_WaitForX<false>},                   // Builtin_WaitForAny,
     {&NodeFunction_Builtin_Yield},                             // Builtin_Yield,
+
+    {&NodeFunction_Builtin_Call},                              // Builtin_Call,
+    {&NodeFunction_Builtin_Call},                              // Builtin_CallLibrary,
+    {&NodeFunction_Builtin_Return},                            // Builtin_Return,
+
+    {},                                                        // Builtin_Reroute,
+    {},                                                        // Builtin_PortalIn,
+    {},                                                        // Builtin_PortalOut,
+    {},                                                        // Builtin_SubGraph,
+    {},                                                        // Builtin_SubGraphInputs,
+    {},                                                        // Builtin_SubGraphOutputs,
 
     {},                                                        // LastBuiltin,
   };

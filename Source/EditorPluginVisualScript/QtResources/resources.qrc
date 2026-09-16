@@ -1,6 +1,7 @@
 <RCC>
   <qresource prefix="AssetIcons">
     <file>VisualScript.svg</file>
+    <file>VisualScriptLibrary.svg</file>
   </qresource>
   <qresource prefix="EditorPluginVisualScript">
     <file>Icons/Coroutine.svg</file>
@@ -8,9 +9,14 @@
     <file>Icons/VariableCategoryMember.svg</file>
     <file>Icons/VariableCategoryArray.svg</file>
     <file>Icons/VariableCategoryMap.svg</file>
+    <file>Icons/SubGraph.svg</file>
+    <file>Icons/CollapseSubGraph.svg</file>
+    <file>Icons/ExpandSubGraph.svg</file>
+    <file>Icons/NavigateUp.svg</file>
+    <file>Icons/Function.svg</file>
+    <file>Icons/Library.svg</file>
   </qresource>
   <qresource prefix="TypeIcons">
 	<file>plScriptComponent.svg</file>
   </qresource>
 </RCC>
-

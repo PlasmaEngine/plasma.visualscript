@@ -503,6 +503,90 @@ namespace
 
   //////////////////////////////////////////////////////////////////////////
 
+  /// User data of Builtin_Call / Builtin_CallLibrary. The function and library names are serialized; the pointers are
+  /// patched by the owning resource after all graphs of the module are loaded (see plVisualScriptGraphDescription::PatchCallSites).
+  struct NodeUserData_Call
+  {
+    const plVisualScriptGraphDescription* m_pFunctionDesc = nullptr;
+    plVisualScriptDataStorage* m_pConstantDataStorage = nullptr; // nullptr = same module as the caller
+    const char* m_szFunctionName = nullptr;                      // points into the node's additional data
+    const char* m_szLibraryId = nullptr;                         // empty for Builtin_Call
+
+#if PL_ENABLED(PL_PLATFORM_32BIT)
+    plUInt32 m_uiPadding[4];
+#endif
+
+    static void GetNames(const plVisualScriptNodeDescription& nodeDesc, plStringView& out_sLibrary, plStringView& out_sFunction)
+    {
+      out_sLibrary = {};
+      out_sFunction = {};
+
+      if (nodeDesc.m_Value.IsA<plVariantArray>())
+      {
+        const plVariantArray& names = nodeDesc.m_Value.Get<plVariantArray>();
+        if (names.GetCount() > 0 && names[0].IsA<plString>())
+          out_sLibrary = names[0].Get<plString>();
+        if (names.GetCount() > 1 && names[1].IsA<plString>())
+          out_sFunction = names[1].Get<plString>();
+      }
+    }
+
+    static plResult Serialize(const plVisualScriptNodeDescription& nodeDesc, plStreamWriter& inout_stream, plUInt32& out_uiSize, plUInt32& out_uiAlignment)
+    {
+      plStringView sLibrary, sFunction;
+      GetNames(nodeDesc, sLibrary, sFunction);
+
+      inout_stream << sLibrary;
+      inout_stream << sFunction;
+
+      // The node stores user data in 32-bit units, so keep the size a multiple of four
+      out_uiSize = plMemoryUtils::AlignSize<plUInt32>(sizeof(NodeUserData_Call) + sLibrary.GetElementCount() + 1 + sFunction.GetElementCount() + 1, 4);
+      out_uiAlignment = GetUserDataAlignment<NodeUserData_Call>();
+      return PL_SUCCESS;
+    }
+
+    static plResult Deserialize(plVisualScriptGraphDescription::Node& ref_node, plStreamReader& inout_stream, plUInt8*& inout_pAdditionalData)
+    {
+      plStringBuilder sLibrary, sFunction;
+      inout_stream >> sLibrary;
+      inout_stream >> sFunction;
+
+      const plUInt32 uiLibrarySize = sLibrary.GetElementCount() + 1;
+      const plUInt32 uiFunctionSize = sFunction.GetElementCount() + 1;
+
+      const plUInt32 uiByteSize = plMemoryUtils::AlignSize<plUInt32>(sizeof(NodeUserData_Call) + uiLibrarySize + uiFunctionSize, 4);
+      auto& userData = ref_node.InitUserData<NodeUserData_Call>(inout_pAdditionalData, uiByteSize);
+      userData = NodeUserData_Call();
+
+      // InitUserData reserved the string bytes right behind the struct (always in the additional data because the size exceeds the embedded storage)
+      char* pStrings = reinterpret_cast<char*>(&userData) + sizeof(NodeUserData_Call);
+      plMemoryUtils::Copy(pStrings, sLibrary.GetData(), uiLibrarySize);
+      plMemoryUtils::Copy(pStrings + uiLibrarySize, sFunction.GetData(), uiFunctionSize);
+
+      userData.m_szLibraryId = pStrings;
+      userData.m_szFunctionName = pStrings + uiLibrarySize;
+
+      return PL_SUCCESS;
+    }
+
+    static void ToString(const plVisualScriptNodeDescription& nodeDesc, plStringBuilder& out_sResult)
+    {
+      plStringView sLibrary, sFunction;
+      GetNames(nodeDesc, sLibrary, sFunction);
+
+      if (sLibrary.IsEmpty() == false)
+      {
+        out_sResult.Append(sLibrary, "::");
+      }
+      out_sResult.Append(sFunction);
+    }
+  };
+
+  static_assert(sizeof(NodeUserData_Call) == 32);
+  static_assert(GetUserDataAlignment<NodeUserData_Call>() == 8);
+
+  //////////////////////////////////////////////////////////////////////////
+
   struct UserDataContext
   {
     SerializeFunction m_SerializeFunc = nullptr;
@@ -520,6 +604,8 @@ namespace
     {&NodeUserData_TypeAndProperties::Serialize,
       &NodeUserData_TypeAndProperties::Deserialize,
       &NodeUserData_TypeAndProperties::ToString}, // MessageHandler_Coroutine,
+    {},                                           // FunctionEntry,
+    {},                                           // FunctionEntry_Coroutine,
     {&NodeUserData_TypeAndFunction::Serialize,
       &NodeUserData_TypeAndFunction::Deserialize,
       &NodeUserData_TypeAndFunction::ToString},   // ReflectedFunction,
@@ -613,6 +699,21 @@ namespace
     {},                                        // Builtin_WaitForAll,
     {},                                        // Builtin_WaitForAny,
     {},                                        // Builtin_Yield,
+
+    {&NodeUserData_Call::Serialize,
+      &NodeUserData_Call::Deserialize,
+      &NodeUserData_Call::ToString},           // Builtin_Call,
+    {&NodeUserData_Call::Serialize,
+      &NodeUserData_Call::Deserialize,
+      &NodeUserData_Call::ToString},           // Builtin_CallLibrary,
+    {},                                        // Builtin_Return,
+
+    {},                                        // Builtin_Reroute,
+    {},                                        // Builtin_PortalIn,
+    {},                                        // Builtin_PortalOut,
+    {},                                        // Builtin_SubGraph,
+    {},                                        // Builtin_SubGraphInputs,
+    {},                                        // Builtin_SubGraphOutputs,
 
     {},                                        // LastBuiltin,
   };

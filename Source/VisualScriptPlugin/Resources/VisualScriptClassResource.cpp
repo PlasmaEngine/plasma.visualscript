@@ -1,8 +1,6 @@
 #include <VisualScriptPlugin/VisualScriptPluginPCH.h>
 
 #include <Foundation/Configuration/Startup.h>
-#include <Foundation/IO/ChunkStream.h>
-#include <Foundation/IO/StringDeduplicationContext.h>
 #include <Foundation/Utilities/AssetFileHeader.h>
 #include <VisualScriptPlugin/Resources/VisualScriptClassResource.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptCoroutine.h>
@@ -43,6 +41,7 @@ plResourceLoadDesc plVisualScriptClassResource::UnloadData(Unload WhatToUnload)
 {
   DeleteScriptType();
   DeleteAllScriptCoroutineTypes();
+  m_Module.Clear();
 
   plResourceLoadDesc ld;
   ld.m_State = plResourceState::Unloaded;
@@ -72,130 +71,66 @@ plResourceLoadDesc plVisualScriptClassResource::UpdateContent(plStreamReader* pS
   plAssetFileHeader AssetHash;
   AssetHash.Read(*pStream).IgnoreResult();
 
-  plString sScriptClassName;
   const plRTTI* pBaseClassType = nullptr;
+  if (plVisualScriptModuleReader::Read(*pStream, m_Module, true, pBaseClassType).Failed())
+  {
+    m_Module.Clear();
+    return ld;
+  }
+
+  // Patch the call nodes before any function can run. Graph-internal functions stay in m_Module and are never exposed on the script type.
+  if (plVisualScriptModuleReader::ResolveCallSites(m_Module).Failed())
+  {
+    m_Module.Clear();
+    return ld;
+  }
+
+  const plString& sScriptClassName = m_Module.m_sScriptClassName;
   plScriptRTTI::FunctionList functions;
   plScriptRTTI::MessageHandlerList messageHandlers;
+
+  for (auto& function : m_Module.m_Functions)
   {
-    plStringDeduplicationReadContext stringDedup(*pStream);
+    const plString& sFunctionName = function.m_sName;
+    plSharedPtr<const plVisualScriptGraphDescription> pDesc = function.m_pDesc;
+    const auto functionType = function.m_Type;
+    const auto coroutineCreationMode = function.m_CoroutineCreationMode;
 
-    plChunkStreamReader chunk(*pStream);
-    chunk.SetEndChunkFileMode(plChunkStreamReader::EndChunkFileMode::JustClose);
-
-    chunk.BeginStream();
-
-    // skip all chunks that we don't know
-    while (chunk.GetCurrentChunk().m_bValid)
+    if (functionType == plVisualScriptNodeDescription::Type::EntryCall)
     {
-      if (chunk.GetCurrentChunk().m_sChunkName == "Header")
-      {
-        plString sBaseClassName;
-        chunk >> sBaseClassName;
-        chunk >> sScriptClassName;
-        pBaseClassType = plRTTI::FindTypeByName(sBaseClassName);
-        if (pBaseClassType == nullptr)
-        {
-          plLog::Error("Invalid base class '{}' for Visual Script Class '{}'", sBaseClassName, sScriptClassName);
-          return ld;
-        }
-      }
-      else if (chunk.GetCurrentChunk().m_sChunkName == "ConstantData")
-      {
-        plSharedPtr<plVisualScriptDataDescription> pConstantDataDesc = PL_SCRIPT_NEW(plVisualScriptDataDescription);
-        if (pConstantDataDesc->Deserialize(chunk).Failed())
-        {
-          return ld;
-        }
-
-        plSharedPtr<plVisualScriptDataStorage> pConstantDataStorage = PL_SCRIPT_NEW(plVisualScriptDataStorage, pConstantDataDesc);
-        if (pConstantDataStorage->Deserialize(chunk, plScriptAllocator::GetAllocator()).Succeeded())
-        {
-          m_pConstantDataStorage = pConstantDataStorage;
-        }
-      }
-      else if (chunk.GetCurrentChunk().m_sChunkName == "InstanceData")
-      {
-        plSharedPtr<plVisualScriptDataDescription> pInstanceDataDesc = PL_SCRIPT_NEW(plVisualScriptDataDescription);
-        if (pInstanceDataDesc->Deserialize(chunk).Succeeded())
-        {
-          m_pInstanceDataDesc = pInstanceDataDesc;
-        }
-
-        plSharedPtr<plVisualScriptInstanceDataMapping> pInstanceDataMapping = PL_SCRIPT_NEW(plVisualScriptInstanceDataMapping);
-        if (chunk.ReadHashTable(pInstanceDataMapping->m_Content).Succeeded())
-        {
-          m_pInstanceDataMapping = pInstanceDataMapping;
-
-          // calculate byte offsets from indices
-          for (auto& it : m_pInstanceDataMapping->m_Content)
-          {
-            auto& dataOffset = it.Value().m_DataOffset;
-            dataOffset = m_pInstanceDataDesc->GetOffset(dataOffset.GetType(), dataOffset.m_uiByteOffset, dataOffset.GetSource());
-          }
-        }
-      }
-      else if (chunk.GetCurrentChunk().m_sChunkName == "FunctionGraphs")
-      {
-        plUInt32 uiNumFunctions;
-        chunk >> uiNumFunctions;
-
-        if (m_pInstanceDataDesc == nullptr || m_pConstantDataStorage == nullptr)
-        {
-          plLog::Error("Old visual script, needs re-export");
-          return ld;
-        }
-
-        for (plUInt32 i = 0; i < uiNumFunctions; ++i)
-        {
-          plString sFunctionName;
-          plEnum<plVisualScriptNodeDescription::Type> functionType;
-          plEnum<plScriptCoroutineCreationMode> coroutineCreationMode;
-          chunk >> sFunctionName;
-          chunk >> functionType;
-          chunk >> coroutineCreationMode;
-
-          plUniquePtr<plVisualScriptGraphDescription> pDesc = PL_SCRIPT_NEW(plVisualScriptGraphDescription);
-          if (pDesc->Deserialize(chunk, *m_pInstanceDataDesc, m_pConstantDataStorage->GetDesc()).Failed())
-          {
-            plLog::Error("Invalid visual script desc");
-            return ld;
-          }
-
-          if (functionType == plVisualScriptNodeDescription::Type::EntryCall)
-          {
-            plUniquePtr<plVisualScriptFunctionProperty> pFunctionProperty = PL_SCRIPT_NEW(plVisualScriptFunctionProperty, sFunctionName, std::move(pDesc));
-            functions.PushBack(std::move(pFunctionProperty));
-          }
-          else if (functionType == plVisualScriptNodeDescription::Type::EntryCall_Coroutine)
-          {
-            plUniquePtr<plVisualScriptCoroutineAllocator> pCoroutineAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, std::move(pDesc));
-            auto pCoroutineType = CreateScriptCoroutineType(sScriptClassName, sFunctionName, std::move(pCoroutineAllocator));
-            plUniquePtr<plScriptCoroutineFunctionProperty> pFunctionProperty = PL_SCRIPT_NEW(plScriptCoroutineFunctionProperty, sFunctionName, pCoroutineType, coroutineCreationMode);
-            functions.PushBack(std::move(pFunctionProperty));
-          }
-          else if (functionType == plVisualScriptNodeDescription::Type::MessageHandler)
-          {
-            auto desc = pDesc->GetMessageDesc();
-            plUniquePtr<plVisualScriptMessageHandler> pMessageHandler = PL_SCRIPT_NEW(plVisualScriptMessageHandler, desc, std::move(pDesc));
-            messageHandlers.PushBack(std::move(pMessageHandler));
-          }
-          else if (functionType == plVisualScriptNodeDescription::Type::MessageHandler_Coroutine)
-          {
-            auto desc = pDesc->GetMessageDesc();
-            plUniquePtr<plVisualScriptCoroutineAllocator> pCoroutineAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, std::move(pDesc));
-            auto pCoroutineType = CreateScriptCoroutineType(sScriptClassName, sFunctionName, std::move(pCoroutineAllocator));
-            plUniquePtr<plScriptCoroutineMessageHandler> pMessageHandler = PL_SCRIPT_NEW(plScriptCoroutineMessageHandler, sFunctionName, desc, pCoroutineType, coroutineCreationMode);
-            messageHandlers.PushBack(std::move(pMessageHandler));
-          }
-          else
-          {
-            plLog::Error("Invalid event handler type '{}' for event handler '{}'", plVisualScriptNodeDescription::Type::GetName(functionType), sFunctionName);
-            return ld;
-          }
-        }
-      }
-
-      chunk.NextChunk();
+      plUniquePtr<plVisualScriptFunctionProperty> pFunctionProperty = PL_SCRIPT_NEW(plVisualScriptFunctionProperty, sFunctionName, pDesc);
+      functions.PushBack(std::move(pFunctionProperty));
+    }
+    else if (functionType == plVisualScriptNodeDescription::Type::EntryCall_Coroutine)
+    {
+      plUniquePtr<plVisualScriptCoroutineAllocator> pCoroutineAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, pDesc);
+      auto pCoroutineType = CreateScriptCoroutineType(sScriptClassName, sFunctionName, std::move(pCoroutineAllocator));
+      plUniquePtr<plScriptCoroutineFunctionProperty> pFunctionProperty = PL_SCRIPT_NEW(plScriptCoroutineFunctionProperty, sFunctionName, pCoroutineType, coroutineCreationMode);
+      functions.PushBack(std::move(pFunctionProperty));
+    }
+    else if (functionType == plVisualScriptNodeDescription::Type::MessageHandler)
+    {
+      auto desc = pDesc->GetMessageDesc();
+      plUniquePtr<plVisualScriptMessageHandler> pMessageHandler = PL_SCRIPT_NEW(plVisualScriptMessageHandler, desc, pDesc);
+      messageHandlers.PushBack(std::move(pMessageHandler));
+    }
+    else if (functionType == plVisualScriptNodeDescription::Type::MessageHandler_Coroutine)
+    {
+      auto desc = pDesc->GetMessageDesc();
+      plUniquePtr<plVisualScriptCoroutineAllocator> pCoroutineAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, pDesc);
+      auto pCoroutineType = CreateScriptCoroutineType(sScriptClassName, sFunctionName, std::move(pCoroutineAllocator));
+      plUniquePtr<plScriptCoroutineMessageHandler> pMessageHandler = PL_SCRIPT_NEW(plScriptCoroutineMessageHandler, sFunctionName, desc, pCoroutineType, coroutineCreationMode);
+      messageHandlers.PushBack(std::move(pMessageHandler));
+    }
+    else if (plVisualScriptNodeDescription::Type::IsFunctionEntry(functionType))
+    {
+      // Graph-internal function, only reachable through call nodes (see m_Module.m_FunctionsByName)
+    }
+    else
+    {
+      plLog::Error("Invalid event handler type '{}' for event handler '{}'", plVisualScriptNodeDescription::Type::GetName(functionType), sFunctionName);
+      m_Module.Clear();
+      return ld;
     }
   }
 
@@ -213,7 +148,7 @@ void plVisualScriptClassResource::UpdateMemoryUsage(MemoryUsage& out_NewMemoryUs
 
 plUniquePtr<plScriptInstance> plVisualScriptClassResource::Instantiate(plReflectedClass& inout_owner, plWorld* pWorld) const
 {
-  return PL_SCRIPT_NEW(plVisualScriptInstance, inout_owner, pWorld, m_pConstantDataStorage, m_pInstanceDataDesc, m_pInstanceDataMapping);
+  return PL_SCRIPT_NEW(plVisualScriptInstance, inout_owner, pWorld, m_Module.m_pConstantDataStorage, m_Module.m_pInstanceDataDesc, m_Module.m_pInstanceDataMapping);
 }
 
 

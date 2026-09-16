@@ -68,6 +68,24 @@ public:
   const plRTTI* GetVariableGetterType() const { return m_pGetVariableType; }
   const NodeDesc* GetNodeDescForType(const plRTTI* pRtti) const;
 
+  // Structural node types (reroutes, portals, sub-graphs, functions, libraries)
+  const plRTTI* GetRerouteType() const { return m_pRerouteType; }
+  const plRTTI* GetPortalType(bool bIn, bool bExec) const { return m_pPortalTypes[bIn ? 1 : 0][bExec ? 1 : 0]; }
+  const plRTTI* GetSubGraphType() const { return m_pSubGraphType; }
+  const plRTTI* GetSubGraphInputsType() const { return m_pSubGraphInputsType; }
+  const plRTTI* GetSubGraphOutputsType() const { return m_pSubGraphOutputsType; }
+  const plRTTI* GetFunctionEntryType() const { return m_pFunctionEntryType; }
+  const plRTTI* GetReturnType() const { return m_pReturnType; }
+  const plRTTI* GetCallType() const { return m_pCallType; }
+  const plRTTI* GetCallLibraryType() const { return m_pCallLibraryType; }
+
+  /// \brief A pin description with a fixed data type, for pins that are created from user declarations rather than a node description.
+  /// plVisualScriptDataType::Invalid returns the execution pin description.
+  const PinDesc& GetGenericPinDesc(plVisualScriptDataType::Enum dataType) const;
+
+  /// \brief Name of the hidden property on every node that stores the sub-graph scope the node belongs to.
+  static constexpr const char* s_szScopeProperty = "Scope";
+
   struct NodeCreationTemplate
   {
     const plRTTI* m_pType = nullptr;
@@ -102,6 +120,7 @@ private:
   void AddOutputDataPin(NodeDesc& ref_nodeDesc, plStringView sName);
 
   void CreateBuiltinTypes();
+  void CreateStructuralTypes();
   void CreateGetOwnerNodeType(const plRTTI* pRtti);
   void CreateFunctionCallNodeType(const plRTTI* pRtti, const plHashedString& sCategory, const plAbstractFunctionProperty* pFunction, const plScriptableFunctionAttribute* pScriptableFunctionAttribute, bool bIsEntryFunction);
   void CreateCoroutineNodeType(const plRTTI* pRtti);
@@ -111,13 +130,23 @@ private:
   void FillDesc(plReflectedTypeDescriptor& desc, const plRTTI* pRtti, const plColorGammaUB* pColorOverride = nullptr);
   void FillDesc(plReflectedTypeDescriptor& desc, plStringView sTypeName, const plColorGammaUB& color);
 
-  const plRTTI* RegisterNodeType(plReflectedTypeDescriptor& typeDesc, NodeDesc&& nodeDesc, const plHashedString& sCategory);
+  const plRTTI* RegisterNodeType(plReflectedTypeDescriptor& typeDesc, NodeDesc&& nodeDesc, const plHashedString& sCategory, bool bAddCreationTemplate = true);
 
   const plRTTI* m_pBaseType = nullptr;
   const plRTTI* m_pSetPropertyType = nullptr;
   const plRTTI* m_pGetPropertyType = nullptr;
   const plRTTI* m_pSetVariableType = nullptr;
   const plRTTI* m_pGetVariableType = nullptr;
+  const plRTTI* m_pRerouteType = nullptr;
+  const plRTTI* m_pPortalTypes[2][2] = {}; // [in][exec]
+  const plRTTI* m_pSubGraphType = nullptr;
+  const plRTTI* m_pSubGraphInputsType = nullptr;
+  const plRTTI* m_pSubGraphOutputsType = nullptr;
+  const plRTTI* m_pFunctionEntryType = nullptr;
+  const plRTTI* m_pReturnType = nullptr;
+  const plRTTI* m_pCallType = nullptr;
+  const plRTTI* m_pCallLibraryType = nullptr;
+  PinDesc m_GenericPinDescs[plVisualScriptDataType::Count];
   bool m_bBuiltinTypesCreated = false;
   plHashTable<const plRTTI*, NodeDesc> m_TypeToNodeDescs;
   plHashSet<const plRTTI*> m_ExposedTypes;

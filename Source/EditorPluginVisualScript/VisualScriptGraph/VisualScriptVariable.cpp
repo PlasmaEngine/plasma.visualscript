@@ -520,6 +520,47 @@ PL_BEGIN_STATIC_REFLECTED_TYPE(plVisualScriptExpressionVariable, plNoBase, 1, pl
   PL_END_PROPERTIES;
 }
 PL_END_STATIC_REFLECTED_TYPE;
+
+PL_BEGIN_STATIC_REFLECTED_ENUM(plVisualScriptPinType, 1)
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Exec),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Bool),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Byte),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Int),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Int64),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Float),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Double),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Color),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Vector3),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Quaternion),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Transform),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Time),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Angle),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::String),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::HashedString),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::GameObject),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Component),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::TypedPointer),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Variant),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Array),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Map),
+  PL_ENUM_CONSTANT(plVisualScriptPinType::Coroutine),
+PL_END_STATIC_REFLECTED_ENUM;
+
+PL_BEGIN_STATIC_REFLECTED_ENUM(plVisualScriptPinKind, 1)
+  PL_ENUM_CONSTANT(plVisualScriptPinKind::Data),
+  PL_ENUM_CONSTANT(plVisualScriptPinKind::Exec),
+PL_END_STATIC_REFLECTED_ENUM;
+
+PL_BEGIN_STATIC_REFLECTED_TYPE(plVisualScriptPinDecl, plNoBase, 1, plRTTIDefaultAllocator<plVisualScriptPinDecl>)
+{
+  PL_BEGIN_PROPERTIES
+  {
+    PL_MEMBER_PROPERTY("Name", m_sName)->AddAttributes(new plDefaultValueAttribute(plStringView("Pin"))),
+    PL_ENUM_MEMBER_PROPERTY("Type", plVisualScriptPinType, m_Type),
+  }
+  PL_END_PROPERTIES;
+}
+PL_END_STATIC_REFLECTED_TYPE;
 // clang-format on
 
 plVisualScriptDataType::Enum plVisualScriptExpressionDataType::GetVisualScriptDataType(Enum dataType)

@@ -7,9 +7,13 @@
 #include <GuiFoundation/Action/DocumentActions.h>
 #include <GuiFoundation/Action/EditActions.h>
 #include <GuiFoundation/Action/StandardMenus.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptActions.h>
+#include <GuiFoundation/Action/VisualGraphActions.h>
 
 void OnLoadPlugin()
 {
+  plVisualScriptActions::RegisterActions();
+
   // VisualScript
   {
     // Menu Bar
@@ -21,6 +25,8 @@ void OnLoadPlugin()
       plAssetActions::MapMenuActions("VisualScriptAssetMenuBar");
       plCommandHistoryActions::MapActions("VisualScriptAssetMenuBar");
       plEditActions::MapActions("VisualScriptAssetMenuBar", false, false);
+      plVisualGraphActions::MapActions("VisualScriptAssetMenuBar", "G.Edit");
+      plVisualScriptActions::MapActions("VisualScriptAssetMenuBar", "G.Edit");
     }
 
     // Tool Bar
@@ -29,12 +35,15 @@ void OnLoadPlugin()
       plDocumentActions::MapToolbarActions("VisualScriptAssetToolBar");
       plCommandHistoryActions::MapActions("VisualScriptAssetToolBar", "");
       plAssetActions::MapToolBarActions("VisualScriptAssetToolBar", true);
+      plVisualGraphActions::MapActions("VisualScriptAssetToolBar");
+      plVisualScriptActions::MapActions("VisualScriptAssetToolBar");
     }
   }
 }
 
 void OnUnloadPlugin()
 {
+  plVisualScriptActions::UnregisterActions();
 }
 
 PL_PLUGIN_ON_LOADED()

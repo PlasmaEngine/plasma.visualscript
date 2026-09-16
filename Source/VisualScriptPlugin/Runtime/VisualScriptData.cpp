@@ -505,6 +505,9 @@ plVariant plVisualScriptDataStorage::GetDataAsVariant(DataOffset dataOffset, con
       PL_ASSERT_DEBUG(pExpectedType == plGetStaticRTTI<plVariantDictionary>(), "");
       return GetData<plVariantDictionary>(dataOffset);
 
+    case plVisualScriptDataType::Coroutine:
+      return GetData<plScriptCoroutineHandle>(dataOffset);
+
       PL_DEFAULT_CASE_NOT_IMPLEMENTED;
   }
 

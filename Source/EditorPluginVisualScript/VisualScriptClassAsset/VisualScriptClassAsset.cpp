@@ -2,10 +2,12 @@
 
 #include <EditorFramework/GUI/ExposedParameters.h>
 #include <EditorPluginVisualScript/VisualScriptClassAsset/VisualScriptClassAsset.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptCommands.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptCompiler.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphQt.moc.h>
 #include <GuiFoundation/VisualGraph/Scene.moc.h>
+#include <ToolsFoundation/Command/TreeCommands.h>
 #include <ToolsFoundation/Serialization/DocumentObjectConverter.h>
-#include <ToolsFoundation/VisualGraph/VisualGraphCommandAccessor.h>
 
 // clang-format off
 PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptClassAssetProperties, 1, plRTTIDefaultAllocator<plVisualScriptClassAssetProperties>)
@@ -13,6 +15,7 @@ PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptClassAssetProperties, 1, plRTTIDef
   PL_BEGIN_PROPERTIES
   {
     PL_MEMBER_PROPERTY("BaseClass", m_sBaseClass)->AddAttributes(new plDefaultValueAttribute(plStringView("Component")), new plDynamicStringEnumAttribute("ScriptBaseClasses")),
+    PL_MEMBER_PROPERTY("GraphName", m_sGraphName)->AddAttributes(new plDefaultValueAttribute(plStringView("Event Graph"))),
     PL_ARRAY_MEMBER_PROPERTY("Variables", m_Variables),
     PL_MEMBER_PROPERTY("DumpAST", m_bDumpAST),
   }
@@ -20,21 +23,65 @@ PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptClassAssetProperties, 1, plRTTIDef
 }
 PL_END_DYNAMIC_REFLECTED_TYPE;
 
-PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptClassAssetDocument, 10, plRTTINoAllocator)
+PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptClassAssetDocument, 12, plRTTINoAllocator)
 PL_END_DYNAMIC_REFLECTED_TYPE;
 // clang-format on
 
 plVisualScriptClassAssetDocument::plVisualScriptClassAssetDocument(plStringView sDocumentPath)
   : plSimpleAssetDocument<plVisualScriptClassAssetProperties>(PL_DEFAULT_NEW(plVisualScriptNodeManager), sDocumentPath, plAssetDocEngineConnection::None)
 {
-  m_pObjectAccessor = PL_DEFAULT_NEW(plVisualGraphCommandAccessor, GetCommandHistory());
+  m_pObjectAccessor = PL_DEFAULT_NEW(plVisualScriptCommandAccessor, GetCommandHistory());
+}
+
+// static
+plStatus plVisualScriptClassAssetDocument::AddEntryFunctions(plVisualScriptNodeManager& ref_manager, plVisualScriptCompiler& ref_compiler, const plHashedString& sBaseClass)
+{
+  plHybridArray<const plVisualScriptPin*, 16> pins;
+  for (const plDocumentObject* pObject : ref_manager.GetRootObject()->GetChildren())
+  {
+    // comments are nodes to the graph framework but have no node description
+    if (ref_manager.IsNode(pObject) == false || ref_manager.IsComment(pObject))
+      continue;
+
+    auto pNodeDesc = plVisualScriptNodeRegistry::GetSingleton()->GetNodeDescForType(pObject->GetType());
+    if (pNodeDesc == nullptr)
+      return plStatus(plFmt("Unknown node type '{}'", pObject->GetType()->GetTypeName()));
+
+    if (ref_manager.IsFilteredByBaseClass(pObject->GetType(), *pNodeDesc, sBaseClass, true))
+      continue;
+
+    if (plVisualScriptNodeDescription::Type::IsEntry(pNodeDesc->m_Type) == false)
+      continue;
+
+    if (ref_manager.IsFunctionEntry(pObject))
+    {
+      // a function is compiled even without a body so that calls to it resolve; it then returns immediately
+      plString sFunctionName = pObject->GetTypeAccessor().GetValue("Name").ConvertTo<plString>();
+      if (sFunctionName.IsEmpty())
+        return plStatus("A function entry has no name");
+
+      PL_SUCCEED_OR_RETURN(ref_compiler.AddFunction(sFunctionName, pObject));
+      continue;
+    }
+
+    ref_manager.GetOutputExecutionPins(pObject, pins);
+    if (pins.IsEmpty())
+      continue;
+
+    if (ref_manager.GetConnections(*pins[0]).IsEmpty())
+      continue;
+
+    plStringView sFunctionName = plVisualScriptNodeManager::GetNiceFunctionName(pObject);
+    PL_SUCCEED_OR_RETURN(ref_compiler.AddFunction(sFunctionName, pObject));
+  }
+
+  return plStatus(PL_SUCCESS);
 }
 
 plTransformStatus plVisualScriptClassAssetDocument::InternalTransformAsset(plStreamWriter& stream, plStringView sOutputTag, const plPlatformProfile* pAssetProfile, const plAssetFileHeader& AssetHeader, plBitflags<plTransformFlags> transformFlags)
 {
   auto pManager = static_cast<plVisualScriptNodeManager*>(GetObjectManager());
 
-  const auto& children = pManager->GetRootObject()->GetChildren();
   plHashedString sBaseClass = pManager->GetScriptBaseClass();
 
   plStringBuilder sBaseClassName = sBaseClass.GetView();
@@ -47,37 +94,14 @@ plTransformStatus plVisualScriptClassAssetDocument::InternalTransformAsset(plStr
     }
   }
 
+  PL_SUCCEED_OR_RETURN(pManager->ValidateGraph());
+
   plStringView sScriptClassName = plPathUtils::GetFileName(GetDocumentPath());
 
   plVisualScriptCompiler compiler(*pManager);
   compiler.InitModule(sBaseClassName, sScriptClassName);
 
-  plHybridArray<const plVisualScriptPin*, 16> pins;
-  for (const plDocumentObject* pObject : children)
-  {
-    if (pManager->IsNode(pObject) == false)
-      continue;
-
-    auto pNodeDesc = plVisualScriptNodeRegistry::GetSingleton()->GetNodeDescForType(pObject->GetType());
-    if (pNodeDesc == nullptr)
-      return plStatus(PL_FAILURE);
-
-    if (pManager->IsFilteredByBaseClass(pObject->GetType(), *pNodeDesc, sBaseClass, true))
-      continue;
-
-    if (plVisualScriptNodeDescription::Type::IsEntry(pNodeDesc->m_Type))
-    {
-      pManager->GetOutputExecutionPins(pObject, pins);
-      if (pins.IsEmpty())
-        continue;
-
-      if (pManager->GetConnections(*pins[0]).IsEmpty())
-        continue;
-
-      plStringView sFunctionName = plVisualScriptNodeManager::GetNiceFunctionName(pObject);
-      PL_SUCCEED_OR_RETURN(compiler.AddFunction(sFunctionName, pObject));
-    }
-  }
+  PL_SUCCEED_OR_RETURN(AddEntryFunctions(*pManager, compiler, sBaseClass));
 
   plStringBuilder sDumpPath;
   if (GetProperties()->m_bDumpAST)
@@ -144,8 +168,14 @@ void plVisualScriptClassAssetDocument::AttachMetaDataBeforeSaving(plAbstractObje
 void plVisualScriptClassAssetDocument::RestoreMetaDataAfterLoading(const plAbstractObjectGraph& graph, bool bUndoable)
 {
   SUPER::RestoreMetaDataAfterLoading(graph, bUndoable);
-  auto pManager = static_cast<plVisualGraphObjectManager*>(GetObjectManager());
+  auto pManager = static_cast<plVisualScriptNodeManager*>(GetObjectManager());
   pManager->RestoreMetaDataAfterLoading(graph, bUndoable);
+
+  // document load (not paste): function bodies saved in the event graph move into their function's graph
+  if (bUndoable == false)
+  {
+    pManager->MigrateFunctionScopes();
+  }
 }
 
 void plVisualScriptClassAssetDocument::GetSupportedMimeTypesForPasting(plHybridArray<plString, 4>& out_MimeTypes) const
@@ -157,12 +187,116 @@ bool plVisualScriptClassAssetDocument::CopySelectedObjects(plAbstractObjectGraph
 {
   out_MimeType = "application/plEditor.VisualScriptClassGraph";
 
-  const plVisualGraphObjectManager* pManager = static_cast<const plVisualGraphObjectManager*>(GetObjectManager());
-  return pManager->CopySelectedObjects(out_objectGraph);
+  const plVisualScriptNodeManager* pManager = static_cast<const plVisualScriptNodeManager*>(GetObjectManager());
+  return plVisualScriptGraphClipboard::CopySelectedObjects(*pManager, out_objectGraph);
 }
 
 bool plVisualScriptClassAssetDocument::Paste(const plArrayPtr<PasteInfo>& info, const plAbstractObjectGraph& objectGraph, bool bAllowPickedPosition, plStringView sMimeType)
 {
-  plVisualGraphObjectManager* pManager = static_cast<plVisualGraphObjectManager*>(GetObjectManager());
-  return pManager->PasteObjects(info, objectGraph, plQtVisualGraphScene::GetLastMouseInteractionPos(), bAllowPickedPosition);
+  plVisualScriptNodeManager* pManager = static_cast<plVisualScriptNodeManager*>(GetObjectManager());
+  return plVisualScriptGraphClipboard::PasteObjects(*pManager, info, objectGraph, plQtVisualGraphScene::GetLastMouseInteractionPos(), bAllowPickedPosition);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+// static
+bool plVisualScriptGraphClipboard::CopySelectedObjects(const plVisualScriptNodeManager& manager, plAbstractObjectGraph& out_objectGraph)
+{
+  const auto& selection = manager.GetDocument()->GetSelectionManager()->GetSelection();
+  if (selection.IsEmpty())
+    return false;
+
+  plDocumentObjectConverterWriter writer(&out_objectGraph, &manager);
+
+  // A sub-graph node or function entry takes everything inside its graph along, including nested sub-graphs
+  plHashSet<const plDocumentObject*> copiedNodes;
+  plHybridArray<const plDocumentObject*, 32> contents;
+  for (const plDocumentObject* pObject : selection)
+  {
+    if (manager.IsNode(pObject) == false)
+      continue;
+
+    if (copiedNodes.Insert(pObject) == false)
+    {
+      writer.AddObjectToGraph(pObject, "root");
+    }
+
+    if (manager.IsScopeOwner(pObject))
+    {
+      manager.GetNodesInScope(pObject->GetGuid(), contents, true);
+      for (const plDocumentObject* pContent : contents)
+      {
+        if (copiedNodes.Insert(pContent) == false)
+        {
+          writer.AddObjectToGraph(pContent, "root");
+        }
+      }
+    }
+  }
+
+  // Only connections with both ends inside the copied set
+  plHashSet<const plDocumentObject*> copiedConnections;
+  for (const plDocumentObject* pNodeObject : copiedNodes)
+  {
+    for (auto& pSourcePin : manager.GetOutputPins(pNodeObject))
+    {
+      for (const plVisualGraphConnection* pConnection : manager.GetConnections(*pSourcePin))
+      {
+        const plDocumentObject* pConnectionObject = pConnection->GetParent();
+        if (copiedConnections.Contains(pConnectionObject) == false && copiedNodes.Contains(pConnection->GetTargetPin().GetParent()))
+        {
+          writer.AddObjectToGraph(pConnectionObject, "root");
+          copiedConnections.Insert(pConnectionObject);
+        }
+      }
+    }
+  }
+
+  manager.AttachMetaDataBeforeSaving(out_objectGraph);
+  return true;
+}
+
+// static
+bool plVisualScriptGraphClipboard::PasteObjects(plVisualScriptNodeManager& ref_manager, const plArrayPtr<plDocument::PasteInfo>& info, const plAbstractObjectGraph& objectGraph, const plVec2& vPickedPosition, bool bAllowPickedPosition)
+{
+  if (ref_manager.PasteObjects(info, objectGraph, vPickedPosition, bAllowPickedPosition) == false)
+    return false;
+
+  // Pasted nodes whose scope is not part of the paste land in the graph that is currently shown.
+  // The paste command runs inside a transaction, so these commands undo together with it.
+  plHashSet<plUuid> pastedGuids;
+  for (const auto& pi : info)
+  {
+    pastedGuids.Insert(pi.m_pObject->GetGuid());
+  }
+
+  plCommandHistory* pHistory = ref_manager.GetDocument()->GetCommandHistory();
+  const plUuid currentScope = ref_manager.GetCurrentViewScope();
+
+  for (const auto& pi : info)
+  {
+    const plDocumentObject* pObject = pi.m_pObject;
+    if (ref_manager.IsNode(pObject) == false || ref_manager.IsComment(pObject))
+      continue;
+
+    // a function entry is the root of its own graph and always stored in the event graph
+    if (ref_manager.IsFunctionEntry(pObject))
+      continue;
+
+    plVariant scope = pObject->GetTypeAccessor().GetValue(plVisualScriptNodeRegistry::s_szScopeProperty);
+    const plUuid scopeGuid = scope.IsA<plUuid>() ? scope.Get<plUuid>() : plUuid();
+    if (scopeGuid.IsValid() && pastedGuids.Contains(scopeGuid))
+      continue;
+
+    if (scopeGuid == currentScope)
+      continue;
+
+    plSetObjectPropertyCommand cmd;
+    cmd.m_Object = pObject->GetGuid();
+    cmd.m_sProperty = plVisualScriptNodeRegistry::s_szScopeProperty;
+    cmd.m_NewValue = currentScope;
+    pHistory->AddCommand(cmd).IgnoreResult();
+  }
+
+  return true;
 }

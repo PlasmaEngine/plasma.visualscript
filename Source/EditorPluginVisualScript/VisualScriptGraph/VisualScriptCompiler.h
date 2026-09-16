@@ -93,6 +93,7 @@ public:
     plEnum<plVisualScriptNodeDescription::Type> m_Type;
     plEnum<plVisualScriptDataType> m_DeductedDataType;
     bool m_bImplicitExecution = false;
+    bool m_bIsCoroutineCall = false; ///< Builtin_Call / Builtin_CallLibrary of a coroutine function: makes the enclosing entry a coroutine
 
     plHashedString m_sTargetTypeName;
     plVariant m_Value;
@@ -157,6 +158,16 @@ private:
   plResult AssignLocalVariables(AstNode* pEntryAstNode, plVisualScriptDataDescription& inout_localDataDesc);
   plResult CopyOutputsToInputs(AstNode* pEntryAstNode);
 
+  /// Functions always end in a Builtin_Return: every dangling execution output gets one that yields the declared default outputs.
+  plResult InsertImplicitReturn(AstNode* pEntryAstNode, const plDocumentObject* pEntryObject);
+
+public:
+  /// True when the function body (transitively, through calls) contains a node that suspends execution.
+  bool IsCoroutineFunction(plStringView sFunctionName);
+
+private:
+  bool IsCoroutineEntry(const plDocumentObject* pEntryObject, plHashSet<const plDocumentObject*>& inout_visitedEntries);
+
   plResult BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions);
 
   plResult FinalizeConstantData();
@@ -220,6 +231,8 @@ private:
   };
 
   CompilationState m_CompilationState;
+
+  plHashTable<plString, bool> m_CoroutineFunctionCache;
 
   CompiledModule m_Module;
 };

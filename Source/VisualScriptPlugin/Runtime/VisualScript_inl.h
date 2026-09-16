@@ -113,6 +113,13 @@ PL_ALWAYS_INLINE const T& plVisualScriptGraphDescription::Node::GetUserData() co
 }
 
 template <typename T>
+PL_ALWAYS_INLINE T& plVisualScriptGraphDescription::Node::GetWritableUserData()
+{
+  PL_ASSERT_DEBUG(m_UserDataByteSize >= sizeof(T), "Invalid data");
+  return *reinterpret_cast<T*>(m_UserDataByteSize <= sizeof(m_UserData.m_Embedded) ? m_UserData.m_Embedded : m_UserData.m_Ptr);
+}
+
+template <typename T>
 T& plVisualScriptGraphDescription::Node::InitUserData(plUInt8*& inout_pAdditionalData, plUInt32 uiByteSize /*= sizeof(T)*/, plUInt32 uiAlignment /*= GetUserDataAlignment<T>()*/)
 {
   m_UserDataByteSize = uiByteSize;
@@ -133,7 +140,14 @@ PL_ALWAYS_INLINE const plVisualScriptGraphDescription::Node* plVisualScriptGraph
 PL_ALWAYS_INLINE bool plVisualScriptGraphDescription::IsCoroutine() const
 {
   auto entryNodeType = GetNode(0)->m_Type;
-  return entryNodeType == plVisualScriptNodeDescription::Type::EntryCall_Coroutine || entryNodeType == plVisualScriptNodeDescription::Type::MessageHandler_Coroutine;
+  return entryNodeType == plVisualScriptNodeDescription::Type::EntryCall_Coroutine ||
+         entryNodeType == plVisualScriptNodeDescription::Type::MessageHandler_Coroutine ||
+         entryNodeType == plVisualScriptNodeDescription::Type::FunctionEntry_Coroutine;
+}
+
+PL_ALWAYS_INLINE bool plVisualScriptGraphDescription::IsFunction() const
+{
+  return plVisualScriptNodeDescription::Type::IsFunctionEntry(GetNode(0)->m_Type);
 }
 
 PL_ALWAYS_INLINE const plSharedPtr<const plVisualScriptDataDescription>& plVisualScriptGraphDescription::GetLocalDataDesc() const
@@ -194,6 +208,6 @@ PL_ALWAYS_INLINE void plVisualScriptExecutionContext::SetCurrentCoroutine(plScri
 
 inline plTime plVisualScriptExecutionContext::GetDeltaTimeSinceLastExecution()
 {
-  PL_ASSERT_DEBUG(m_pDesc->IsCoroutine(), "Delta time is only valid for coroutines");
+  PL_ASSERT_DEBUG(m_bIsCoroutine, "Delta time is only valid for coroutines");
   return m_DeltaTimeSinceLastExecution;
 }
