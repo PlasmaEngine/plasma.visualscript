@@ -1,12 +1,12 @@
 #include <EditorPluginVisualScript/EditorPluginVisualScriptPCH.h>
 
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptActions.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptFunctionPanel.moc.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphQt.moc.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptFunctionPanel.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphView.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.h>
 #include <GuiFoundation/Action/ActionManager.h>
 #include <GuiFoundation/Action/ActionMapManager.h>
-#include <GuiFoundation/VisualGraph/View.moc.h>
+#include <GuiFoundation/EngineUi/EngineGraphView.h>
 
 // clang-format off
 PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptAction, 1, plRTTINoAllocator)
@@ -76,27 +76,39 @@ void plVisualScriptAction::Execute(const plVariant& value)
 {
   if (m_ButtonType == ButtonType::AddFunction)
   {
-    plQtVisualScriptWindow* pWindow = qobject_cast<plQtVisualScriptWindow*>(m_Context.m_pWindow);
+    plVisualScriptWindow* pWindow = dynamic_cast<plVisualScriptWindow*>(m_Context.m_pWindow);
     if (pWindow != nullptr && pWindow->GetFunctionPanel() != nullptr)
       pWindow->GetFunctionPanel()->AddFunction();
     return;
   }
 
-  plQtVisualGraphView* pView = m_Context.m_pWindow ? m_Context.m_pWindow->findChild<plQtVisualGraphView*>() : nullptr;
-  plQtVisualScriptNodeScene* pScene = pView ? qobject_cast<plQtVisualScriptNodeScene*>(pView->GetScene()) : nullptr;
-  if (pScene == nullptr)
+  plVisualScriptGraphHost* pGraph = FindGraph();
+  if (pGraph == nullptr)
     return;
 
   switch (m_ButtonType)
   {
     case ButtonType::CollapseToSubGraph:
-      pScene->CollapseSelectionToSubGraph();
+      pGraph->CollapseSelectionToSubGraph();
       break;
     case ButtonType::ExpandSubGraph:
-      pScene->ExpandSelectedSubGraph();
+      pGraph->ExpandSelectedSubGraph();
       break;
     case ButtonType::NavigateToParent:
-      pScene->NavigateToParentScope();
+      pGraph->NavigateToParentScope();
+      break;
+    case ButtonType::AddFunction:
       break;
   }
+}
+
+plVisualScriptGraphHost* plVisualScriptAction::FindGraph() const
+{
+  // the controller of the window's engine graph view
+  auto* pWindow = dynamic_cast<plDocumentWindow*>(m_Context.m_pWindow);
+  if (pWindow == nullptr)
+    return nullptr;
+
+  plEditorUiGraphView* pView = pWindow->FindPanelContent<plEditorUiGraphView>();
+  return pView ? dynamic_cast<plVisualScriptGraphController*>(pView->GetController()) : nullptr;
 }

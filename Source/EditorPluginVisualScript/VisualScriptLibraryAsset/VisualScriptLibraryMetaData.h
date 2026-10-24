@@ -1,6 +1,6 @@
 #pragma once
 
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
 #include <Foundation/Reflection/Reflection.h>
 
 /// One pin of a library function as published in the library's asset meta data.

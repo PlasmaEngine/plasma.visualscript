@@ -1,5 +1,7 @@
 #include <VisualScriptPlugin/VisualScriptPluginPCH.h>
 
+#include <Core/Scripting/ScriptCallScope.h>
+#include <Core/Scripting/ScriptComponent.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptCoroutine.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptInstance.h>
 
@@ -23,6 +25,10 @@ void plVisualScriptCoroutine::Stop()
 
 plScriptCoroutine::Result plVisualScriptCoroutine::Update(plTime deltaTimeSinceLastUpdate)
 {
+  const plScriptInstance* pInstance = GetScriptInstance();
+  const plScriptComponent* pComponent = pInstance != nullptr ? plDynamicCast<const plScriptComponent*>(&pInstance->GetOwner()) : nullptr;
+  plScriptCallScope scope(pInstance, pComponent != nullptr ? pComponent->GetScriptType() : nullptr, GetName().GetStartPointer());
+
   auto result = m_Context.Execute(deltaTimeSinceLastUpdate);
   if (result.m_NextExecAndState == plVisualScriptExecutionContext::ExecResult::State::ContinueLater)
   {

@@ -5,8 +5,6 @@
 #include <Foundation/Configuration/Singleton.h>
 #include <VisualScriptPlugin/Runtime/VisualScript.h>
 
-#include <QMetaObject>
-
 struct plVisualGraphNodeProperty;
 class plVisualScriptPin;
 
@@ -153,7 +151,7 @@ private:
   plHashSet<const plRTTI*> m_TypesToUpdate;
   plSet<plString> m_PendingBindingTypes;
   plScriptBindingSnapshot m_BindingSnapshot;
-  QMetaObject::Connection m_IdleConnection;
+  plEventSubscriptionID m_IdleSubscription = 0;
   bool m_bBindingRefreshPending = false;
 
   plDynamicArray<NodeCreationTemplate> m_NodeCreationTemplates;

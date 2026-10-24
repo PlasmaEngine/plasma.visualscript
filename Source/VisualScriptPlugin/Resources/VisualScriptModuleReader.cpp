@@ -118,11 +118,34 @@ plResult plVisualScriptModuleReader::Read(plStreamReader& inout_stream, plVisual
           return PL_FAILURE;
         }
 
+        function.m_pDesc->GetWritableDebugInfo().m_sFunction = function.m_sName;
+
         if (plVisualScriptNodeDescription::Type::IsFunctionEntry(function.m_Type))
         {
           plHashedString sName;
           sName.Assign(function.m_sName);
           out_module.m_FunctionsByName.Insert(sName, function.m_pDesc);
+        }
+      }
+    }
+
+    else if (chunk.GetCurrentChunk().m_sChunkName == "DebugTable")
+    {
+      plString sAsset;
+      plUInt32 uiNumFunctions = 0;
+      chunk >> sAsset;
+      chunk >> uiNumFunctions;
+
+      for (plUInt32 i = 0; i < uiNumFunctions; ++i)
+      {
+        plDynamicArray<plUuid> nodeGuids;
+        PL_SUCCEED_OR_RETURN(chunk.ReadArray(nodeGuids));
+
+        if (i < out_module.m_Functions.GetCount())
+        {
+          auto& debugInfo = out_module.m_Functions[i].m_pDesc->GetWritableDebugInfo();
+          debugInfo.m_sAsset = sAsset;
+          debugInfo.m_NodeGuids = std::move(nodeGuids);
         }
       }
     }

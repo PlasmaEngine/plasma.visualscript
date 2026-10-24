@@ -2,7 +2,7 @@
 
 #include <EditorPluginVisualScript/VisualScriptClassAsset/VisualScriptClassAsset.h>
 #include <EditorPluginVisualScript/VisualScriptClassAsset/VisualScriptClassAssetManager.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.h>
 
 PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptClassAssetManager, 1, plRTTIDefaultAllocator<plVisualScriptClassAssetManager>)
 PL_END_DYNAMIC_REFLECTED_TYPE;
@@ -21,8 +21,6 @@ plVisualScriptClassAssetManager::plVisualScriptClassAssetManager()
 
   m_DocTypeDesc.m_sResourceFileExtension = "plBinVisualScriptClass";
   m_DocTypeDesc.m_AssetDocumentFlags = plAssetDocumentFlags::AutoTransformOnSave;
-
-  plQtImageCache::GetSingleton()->RegisterTypeImage("VisualScriptClass", QPixmap(":/AssetIcons/VisualScript.svg"));
 }
 
 plVisualScriptClassAssetManager::~plVisualScriptClassAssetManager()
@@ -38,7 +36,7 @@ void plVisualScriptClassAssetManager::OnDocumentManagerEvent(const plDocumentMan
     {
       if (e.m_pDocument->GetDynamicRTTI() == plGetStaticRTTI<plVisualScriptClassAssetDocument>())
       {
-        new plQtVisualScriptWindow(e.m_pDocument); // NOLINT: Not a memory leak
+        new plVisualScriptWindow(e.m_pDocument); // NOLINT: Not a memory leak
       }
     }
     break;

@@ -1,5 +1,6 @@
 #include <VisualScriptPlugin/VisualScriptPluginPCH.h>
 
+#include <Core/Scripting/ScriptCallScope.h>
 #include <Core/Scripting/ScriptComponent.h>
 #include <Core/Scripting/ScriptWorldModule.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptFunctionProperty.h>
@@ -18,6 +19,9 @@ void plVisualScriptFunctionProperty::Execute(void* pInstance, plArrayPtr<plVaria
 {
   PL_ASSERT_DEBUG(pInstance != nullptr, "Invalid instance");
   auto pVisualScriptInstance = static_cast<plVisualScriptInstance*>(pInstance);
+
+  const plScriptComponent* pComponent = plDynamicCast<const plScriptComponent*>(&pVisualScriptInstance->GetOwner());
+  plScriptCallScope scope(pVisualScriptInstance, pComponent != nullptr ? pComponent->GetScriptType() : nullptr, GetPropertyName());
 
   plVisualScriptExecutionContext context(m_pDesc, plFrameAllocator::GetCurrentAllocator());
   context.Initialize(*pVisualScriptInstance, arguments);
@@ -47,6 +51,10 @@ void plVisualScriptMessageHandler::Dispatch(plAbstractMessageHandler* pSelf, voi
   auto pHandler = static_cast<plVisualScriptMessageHandler*>(pSelf);
   auto pComponent = static_cast<plScriptComponent*>(pInstance);
   auto pVisualScriptInstance = static_cast<plVisualScriptInstance*>(pComponent->GetScriptInstance());
+  if (pVisualScriptInstance == nullptr)
+    return;
+
+  plScriptCallScope scope(pVisualScriptInstance, pComponent->GetScriptType(), ref_msg.GetDynamicRTTI()->GetTypeName().GetStartPointer());
 
   plHybridArray<plVariant, 8> arguments;
   pHandler->FillMessagePropertyValues(ref_msg, arguments);

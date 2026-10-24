@@ -1,6 +1,6 @@
 #include <EditorPluginAssets/EditorPluginAssetsPCH.h>
 
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.h>
 #include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryAsset.h>
 #include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryAssetManager.h>
 
@@ -21,8 +21,6 @@ plVisualScriptLibraryAssetManager::plVisualScriptLibraryAssetManager()
 
   m_DocTypeDesc.m_sResourceFileExtension = "plBinVisualScriptLibrary";
   m_DocTypeDesc.m_AssetDocumentFlags = plAssetDocumentFlags::AutoTransformOnSave;
-
-  plQtImageCache::GetSingleton()->RegisterTypeImage("VisualScriptLibrary", QPixmap(":/AssetIcons/VisualScriptLibrary.svg"));
 }
 
 plVisualScriptLibraryAssetManager::~plVisualScriptLibraryAssetManager()
@@ -38,7 +36,7 @@ void plVisualScriptLibraryAssetManager::OnDocumentManagerEvent(const plDocumentM
     {
       if (e.m_pDocument->GetDynamicRTTI() == plGetStaticRTTI<plVisualScriptLibraryAssetDocument>())
       {
-        new plQtVisualScriptWindow(e.m_pDocument); // NOLINT: Not a memory leak
+        new plVisualScriptWindow(e.m_pDocument); // NOLINT: Not a memory leak
       }
     }
     break;

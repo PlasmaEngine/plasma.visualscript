@@ -1,132 +1,345 @@
 #include <EditorPluginVisualScript/EditorPluginVisualScriptPCH.h>
 
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptFunctionPanel.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptFunctionPanel.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraph.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphQt.moc.h>
-#include <GuiFoundation/UIServices/UIServices.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphView.h>
+#include <EditorUi/MenuBuilder.h>
+#include <EditorUi/Surface.h>
+#include <EditorUi/Tree.h>
+#include <EditorUi/Widgets.h>
+#include <Foundation/Algorithm/HashingUtils.h>
+#include <Foundation/Math/ColorScheme.h>
+#include <GuiFoundation/UIServices/UIServices.h>
 #include <ToolsFoundation/Document/Document.h>
 #include <ToolsFoundation/Object/ObjectAccessorBase.h>
 #include <ToolsFoundation/Selection/SelectionManager.h>
 
-#include <QHBoxLayout>
-#include <QListWidget>
-#include <QMenu>
-#include <QTimer>
-#include <QToolButton>
-#include <QVBoxLayout>
-
 namespace
 {
-  constexpr int s_iGuidRole = Qt::UserRole + 1;
-}
+  /// The event graph's row; functions use a hash of their entry's guid, which stays the same across refreshes.
+  constexpr plUInt64 s_uiEventGraphItem = 1;
 
-plQtVisualScriptFunctionPanel::plQtVisualScriptFunctionPanel(QWidget* pParent, plDocument* pDocument, plQtVisualScriptNodeScene* pScene)
-  : QWidget(pParent)
-  , m_pDocument(pDocument)
-  , m_pScene(pScene)
+  constexpr const char* s_szEventGraphIcon = ":/EditorPluginVisualScript/Icons/SubGraph.svg";
+  constexpr const char* s_szFunctionIcon = ":/EditorPluginVisualScript/Icons/Function.svg";
+
+  constexpr const char* s_szAddAction = "VisualScript.Functions.Add";
+  constexpr const char* s_szRemoveAction = "VisualScript.Functions.Remove";
+  constexpr const char* s_szNoFunctionEntry = "VisualScript.Functions.NoFunction";
+
+  /// The row of Add Function and Remove Function under the list.
+  constexpr float s_fButtonRowHeight = plEditorUi::ControlHeight + 12.0f;
+} // namespace
+
+//////////////////////////////////////////////////////////////////////////
+// plVisualScriptFunctionPanel::Adapter
+
+/// The rows of the tree: the panel's entries, flat, in the panel's order.
+class plVisualScriptFunctionPanel::Adapter : public plEditorUiTreeAdapter
 {
-  m_pManager = static_cast<const plVisualScriptNodeManager*>(pDocument->GetObjectManager());
-
-  QVBoxLayout* pLayout = new QVBoxLayout(this);
-  pLayout->setContentsMargins(0, 0, 0, 0);
-  pLayout->setSpacing(0);
-
+public:
+  explicit Adapter(plVisualScriptFunctionPanel& ref_panel)
+    : m_Panel(ref_panel)
   {
-    QWidget* pToolbar = new QWidget(this);
-    QHBoxLayout* pToolbarLayout = new QHBoxLayout(pToolbar);
-    pToolbarLayout->setContentsMargins(2, 2, 2, 2);
-    pToolbarLayout->setSpacing(2);
-
-    m_pAddButton = new QToolButton(pToolbar);
-    m_pAddButton->setIcon(QIcon(":/EditorPluginVisualScript/Icons/Function.svg"));
-    m_pAddButton->setText("Add Function");
-    m_pAddButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_pAddButton->setToolTip("Adds a function with its own graph");
-    m_pAddButton->setAutoRaise(true);
-
-    m_pRemoveButton = new QToolButton(pToolbar);
-    m_pRemoveButton->setIcon(QIcon(":/GuiFoundation/Icons/Delete.svg"));
-    m_pRemoveButton->setToolTip("Removes the selected function and everything in its graph");
-    m_pRemoveButton->setAutoRaise(true);
-
-    pToolbarLayout->addWidget(m_pAddButton);
-    pToolbarLayout->addStretch();
-    pToolbarLayout->addWidget(m_pRemoveButton);
-
-    pLayout->addWidget(pToolbar);
   }
 
-  m_pList = new QListWidget(this);
-  m_pList->setSelectionMode(QAbstractItemView::SingleSelection);
-  m_pList->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
-  m_pList->setContextMenuPolicy(Qt::CustomContextMenu);
-  pLayout->addWidget(m_pList, 1);
+  void GetChildren(plUInt64 uiParent, plDynamicArray<plUInt64>& out_children) const override
+  {
+    out_children.Clear();
+    if (uiParent != 0)
+      return;
 
-  setLayout(pLayout);
+    for (const Entry& entry : m_Panel.m_Entries)
+      out_children.PushBack(entry.m_uiItem);
+  }
 
-  connect(m_pAddButton, &QToolButton::clicked, this, &plQtVisualScriptFunctionPanel::OnAddClicked);
-  connect(m_pRemoveButton, &QToolButton::clicked, this, &plQtVisualScriptFunctionPanel::OnRemoveClicked);
-  connect(m_pList, &QListWidget::itemClicked, this, &plQtVisualScriptFunctionPanel::OnItemClicked);
-  connect(m_pList, &QListWidget::itemChanged, this, &plQtVisualScriptFunctionPanel::OnItemChanged);
-  connect(m_pList, &QListWidget::customContextMenuRequested, this, &plQtVisualScriptFunctionPanel::OnContextMenu);
+  plUInt64 GetParent(plUInt64 /*uiItem*/) const override { return 0; }
+
+  void GetRow(plUInt64 uiItem, plEditorUiTreeRow& out_row) const override
+  {
+    const Entry* pEntry = m_Panel.FindEntry(uiItem);
+    if (pEntry == nullptr)
+      return;
+
+    out_row.m_sText = pEntry->m_sName;
+    out_row.m_sTooltip = pEntry->m_sTooltip;
+    out_row.m_sIcon = pEntry->m_Guid.IsValid() ? s_szFunctionIcon : s_szEventGraphIcon;
+    out_row.m_IconColor = plColorScheme::GetCategoryColor("Scripting", plColorScheme::CategoryColorUsage::OverlayIcon);
+  }
+
+  bool CanRename(plUInt64 uiItem) const override { return m_Panel.FindEntry(uiItem) != nullptr; }
+
+  plStatus Rename(plUInt64 uiItem, plStringView sText) override
+  {
+    m_Panel.RenameGraph(uiItem, sText);
+    return plStatus(PL_SUCCESS);
+  }
+
+  /// Delete removes the selected function (the list selects one row at a time).
+  void Delete(plArrayPtr<const plUInt64> /*items*/) override { m_Panel.RemoveSelectedFunction(); }
+
+  /// Double-click and Enter rename.
+  void Activate(plUInt64 uiItem) override { m_Panel.m_pTree->BeginRename(uiItem); }
+
+private:
+  plVisualScriptFunctionPanel& m_Panel;
+};
+
+//////////////////////////////////////////////////////////////////////////
+// plVisualScriptFunctionPanel
+
+plVisualScriptFunctionPanel::plVisualScriptFunctionPanel(plDocument* pDocument, plVisualScriptGraphHost* pGraph)
+  : plEditorUiContent("VisualScript.Functions")
+  , m_pDocument(pDocument)
+  , m_pGraph(pGraph)
+{
+  m_pManager = static_cast<const plVisualScriptNodeManager*>(pDocument->GetObjectManager());
+  m_pAdapter = PL_DEFAULT_NEW(Adapter, *this);
+
+  if (IsReady())
+  {
+    m_pTree = PL_DEFAULT_NEW(plEditorUiTree, *GetSurface(), "VisualScript.FunctionTree", *m_pAdapter);
+    m_pTree->m_Events.AddEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::OnTreeEvent, this));
+
+    // after the tree's handler, so a right-click on a row is the tree's
+    m_PointerSubscription = GetSurface()->m_PointerEvents.AddEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::OnPointer, this));
+  }
 
   auto pManager = const_cast<plVisualScriptNodeManager*>(m_pManager);
-  pManager->m_NodeEvents.AddEventHandler(plMakeDelegate(&plQtVisualScriptFunctionPanel::NodeEventsHandler, this));
-  pManager->m_PropertyEvents.AddEventHandler(plMakeDelegate(&plQtVisualScriptFunctionPanel::PropertyEventsHandler, this));
+  pManager->m_NodeEvents.AddEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::NodeEventsHandler, this));
+  pManager->m_PropertyEvents.AddEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::PropertyEventsHandler, this));
 
   Refresh();
 }
 
-plQtVisualScriptFunctionPanel::~plQtVisualScriptFunctionPanel()
+plVisualScriptFunctionPanel::~plVisualScriptFunctionPanel()
 {
   auto pManager = const_cast<plVisualScriptNodeManager*>(m_pManager);
-  pManager->m_NodeEvents.RemoveEventHandler(plMakeDelegate(&plQtVisualScriptFunctionPanel::NodeEventsHandler, this));
-  pManager->m_PropertyEvents.RemoveEventHandler(plMakeDelegate(&plQtVisualScriptFunctionPanel::PropertyEventsHandler, this));
+  pManager->m_NodeEvents.RemoveEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::NodeEventsHandler, this));
+  pManager->m_PropertyEvents.RemoveEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::PropertyEventsHandler, this));
+
+  if (m_pTree)
+  {
+    m_pTree->m_Events.RemoveEventHandler(plMakeDelegate(&plVisualScriptFunctionPanel::OnTreeEvent, this));
+    GetSurface()->m_PointerEvents.RemoveEventHandler(m_PointerSubscription);
+  }
 }
 
 // static
-plUuid plQtVisualScriptFunctionPanel::GetItemGuid(const QListWidgetItem* pItem)
+plUInt64 plVisualScriptFunctionPanel::GetItemId(const plUuid& guid)
 {
-  plUuid guid;
-  if (pItem == nullptr)
-    return guid;
+  if (!guid.IsValid())
+    return s_uiEventGraphItem;
 
-  QByteArray data = pItem->data(s_iGuidRole).toByteArray();
-  if (data.size() == sizeof(plUuid))
-  {
-    plMemoryUtils::Copy(&guid, reinterpret_cast<const plUuid*>(data.constData()), 1);
-  }
-  return guid;
+  // 0 is the tree's root
+  const plUInt64 uiId = plHashingUtils::xxHash64(&guid, sizeof(plUuid));
+  return uiId > s_uiEventGraphItem ? uiId : uiId + 2;
 }
 
-QListWidgetItem* plQtVisualScriptFunctionPanel::FindItem(const plUuid& guid) const
+const plVisualScriptFunctionPanel::Entry* plVisualScriptFunctionPanel::FindEntry(plUInt64 uiItem) const
 {
-  for (int i = 0; i < m_pList->count(); ++i)
+  for (const Entry& entry : m_Entries)
   {
-    if (GetItemGuid(m_pList->item(i)) == guid)
-      return m_pList->item(i);
+    if (entry.m_uiItem == uiItem)
+      return &entry;
   }
   return nullptr;
 }
 
-void plQtVisualScriptFunctionPanel::SetCurrentScope(const plUuid& scope)
+const plVisualScriptFunctionPanel::Entry* plVisualScriptFunctionPanel::GetSelectedEntry() const
+{
+  if (!m_pTree)
+    return nullptr;
+
+  plDynamicArray<plUInt64> selection;
+  m_pTree->GetSelection(selection);
+  return selection.IsEmpty() ? nullptr : FindEntry(selection[0]);
+}
+
+void plVisualScriptFunctionPanel::SetCurrentScope(const plUuid& scope)
 {
   const plDocumentObject* pFunction = m_pManager->GetScopeFunction(scope);
   m_CurrentRoot = pFunction != nullptr ? pFunction->GetGuid() : plUuid();
 
-  m_bRefreshing = true;
-  m_pList->clearSelection();
-  if (QListWidgetItem* pItem = FindItem(m_CurrentRoot))
-  {
-    pItem->setSelected(true);
-    m_pList->setCurrentItem(pItem);
-  }
-  m_bRefreshing = false;
-
-  m_pRemoveButton->setEnabled(m_CurrentRoot.IsValid());
+  SyncSelection();
 }
 
-void plQtVisualScriptFunctionPanel::NodeEventsHandler(const plVisualGraphObjectManagerEvent& e)
+void plVisualScriptFunctionPanel::SyncSelection()
+{
+  if (!m_pTree)
+    return;
+
+  // one selected row: the graph that is shown
+  const plUInt64 uiItem = GetItemId(m_CurrentRoot);
+  if (FindEntry(uiItem) != nullptr)
+  {
+    m_pTree->SetSelection(plMakeArrayPtr(&uiItem, 1));
+    m_pTree->Reveal(uiItem);
+  }
+  else
+  {
+    m_pTree->SetSelection({});
+  }
+
+  GetSurface()->GetBlackboard().SetEntryValue(s_szNoFunctionEntry, !m_CurrentRoot.IsValid());
+  RequestRedraw();
+}
+
+void plVisualScriptFunctionPanel::OnUiUpdate()
+{
+  if (!m_pTree || GetSurface()->GetLogicalSize() == m_vBuiltSize)
+    return;
+
+  m_vBuiltSize = GetSurface()->GetLogicalSize();
+  BuildLayout();
+}
+
+void plVisualScriptFunctionPanel::BuildLayout()
+{
+  using namespace plEditorUi;
+
+  plUiPanel* pRoot = Panel();
+  pRoot->m_Color = Surface();
+
+  plUiPanel* pList = Panel(pRoot);
+  Fill(pList, plVec4(0, 0, 0, s_fButtonRowHeight));
+  pList->m_Color = Surface();
+  m_pTree->Build(pList);
+
+  // Add Function and Remove Function under the list
+  plUiPanel* pButtons = Panel(pRoot);
+  pButtons->m_vAnchorMin.y = 1;
+  pButtons->m_vOffsets = plVec4(0, -s_fButtonRowHeight, 0, s_fButtonRowHeight);
+  pButtons->m_Color = Surface();
+
+  plUiPanel* pLine = Panel(pButtons);
+  pLine->m_vAnchorMax.y = 0;
+  pLine->m_vOffsets = plVec4(0, 0, 0, 1);
+  pLine->m_Color = Line();
+
+  // text buttons as wide as their text; Add Function leads with its plus
+  const plStringView sAdd = "Add Function";
+  const plStringView sRemove = "Remove Function";
+  const float fAddWidth = plMath::Ceil(MeasureText(sAdd, FontSize - 1)) + 40.0f;
+  const float fRemoveWidth = plMath::Ceil(MeasureText(sRemove, FontSize - 1)) + 20.0f;
+
+  plUiButton* pAdd = TextButton(pButtons, sAdd, s_szAddAction);
+  pAdd->m_vAnchorMin = pAdd->m_vAnchorMax = plVec2::MakeZero();
+  pAdd->m_vOffsets = plVec4(8, 6, fAddWidth, ControlHeight);
+  static_cast<plUiText*>(pAdd->m_Children[0])->m_vOffsets.x = 26;
+
+  plUiImage* pPlus = ButtonIcon(pAdd, Icon::Add);
+  pPlus->m_vAnchorMin = pPlus->m_vAnchorMax = plVec2(0, 0.5f);
+  pPlus->m_vOffsets = plVec4(8, -7, 14, 14);
+  pPlus->m_Color = Muted();
+
+  plUiButton* pRemove = TextButton(pButtons, sRemove, s_szRemoveAction);
+  pRemove->m_vAnchorMin = pRemove->m_vAnchorMax = plVec2::MakeZero();
+  pRemove->m_vOffsets = plVec4(16 + fAddWidth, 6, fRemoveWidth, ControlHeight);
+  pRemove->m_sDisabledBinding = s_szNoFunctionEntry;
+
+  plBlackboard& board = GetSurface()->GetBlackboard();
+  SetToolTip(board, s_szAddAction, "Adds a function with its own graph");
+  SetToolTip(board, s_szRemoveAction, "Removes the selected function and everything in its graph");
+
+  SetDocument(Finish(pRoot));
+
+  m_pTree->Refresh();
+  SyncSelection();
+}
+
+void plVisualScriptFunctionPanel::OnUiEvent(const plMsgUiEvent& event)
+{
+  if (event.m_sIdentifier.GetView() == s_szAddAction)
+  {
+    Defer([this]()
+      { AddFunction(); });
+  }
+  else if (event.m_sIdentifier.GetView() == s_szRemoveAction)
+  {
+    RemoveSelectedFunction();
+  }
+}
+
+void plVisualScriptFunctionPanel::OnTreeEvent(const plEditorUiTreeEvent& e)
+{
+  switch (e.m_Type)
+  {
+    case plEditorUiTreeEvent::Type::SelectionChanged:
+      OnSelectionChanged();
+      break;
+
+    case plEditorUiTreeEvent::Type::ContextMenu:
+      ShowContextMenu(e.m_vPosition, FindEntry(m_pTree->GetCurrent()));
+      break;
+
+    default:
+      break;
+  }
+}
+
+void plVisualScriptFunctionPanel::OnSelectionChanged()
+{
+  // the row clicked or moved to with the keys; Ctrl and Shift selections collapse to it
+  const Entry* pEntry = FindEntry(m_pTree->GetCurrent());
+  if (pEntry == nullptr || pEntry->m_Guid == m_pGraph->GetCurrentScope())
+  {
+    SyncSelection();
+    return;
+  }
+
+  ShowGraph(pEntry->m_Guid);
+}
+
+void plVisualScriptFunctionPanel::OnPointer(const plEditorUiPointerEvent& e)
+{
+  // a right-click on the list below the rows offers Add Function; the rows' menu comes from the tree
+  if (e.m_Type != plEditorUiPointerEvent::Type::Press || e.m_Button != plEditorUiPointerEvent::Button::Right || e.m_iItemIndex >= 0)
+    return;
+
+  if (e.m_vPosition.y >= m_vBuiltSize.y - s_fButtonRowHeight)
+    return;
+
+  ShowContextMenu(e.m_vPosition, nullptr);
+}
+
+void plVisualScriptFunctionPanel::ShowContextMenu(const plVec2& vPosition, const Entry* pEntry)
+{
+  // the picked entry's work runs deferred, like the buttons' (adding renames in place, removing asks first)
+  auto deferred = [this](std::function<void()> work) -> plEditorUiMenuBuilder::Work
+  {
+    return [this, work]()
+    { Defer(work); };
+  };
+
+  plEditorUiMenuBuilder menu;
+
+  auto addFunction = [this]()
+  { AddFunction(); };
+  menu.AddAction("Add Function", deferred(addFunction)).m_sIcon = plEditorUi::IconPath(plEditorUi::Icon::Add);
+
+  if (pEntry != nullptr)
+  {
+    const plUInt64 uiItem = pEntry->m_uiItem;
+    auto rename = [this, uiItem]()
+    { m_pTree->BeginRename(uiItem); };
+    menu.AddAction("Rename", deferred(rename), "F2").m_sIcon = plEditorUi::IconPath(plEditorUi::Icon::Rename);
+  }
+
+  if (pEntry != nullptr && pEntry->m_Guid.IsValid())
+  {
+    const plUuid guid = pEntry->m_Guid;
+    auto removeFunction = [this, guid]()
+    { RemoveFunction(guid); };
+
+    plEditorUiMenuItem& remove = menu.AddAction("Remove Function", deferred(removeFunction), "Del");
+    remove.m_sIcon = plEditorUi::IconPath(plEditorUi::Icon::Remove);
+    remove.m_bDanger = true;
+  }
+
+  menu.Show(*GetSurface(), vPosition);
+}
+
+void plVisualScriptFunctionPanel::NodeEventsHandler(const plVisualGraphObjectManagerEvent& e)
 {
   switch (e.m_EventType)
   {
@@ -143,7 +356,7 @@ void plQtVisualScriptFunctionPanel::NodeEventsHandler(const plVisualGraphObjectM
   }
 }
 
-void plQtVisualScriptFunctionPanel::PropertyEventsHandler(const plDocumentObjectPropertyEvent& e)
+void plVisualScriptFunctionPanel::PropertyEventsHandler(const plDocumentObjectPropertyEvent& e)
 {
   if (e.m_sProperty == "GraphName" || (e.m_sProperty == "Name" && m_pManager->IsNode(e.m_pObject) && m_pManager->IsFunctionEntry(e.m_pObject)))
   {
@@ -151,34 +364,34 @@ void plQtVisualScriptFunctionPanel::PropertyEventsHandler(const plDocumentObject
   }
 }
 
-void plQtVisualScriptFunctionPanel::ScheduleRefresh()
+void plVisualScriptFunctionPanel::Defer(std::function<void()> action)
+{
+  m_Timers.Start(plTime::MakeZero(), std::move(action));
+}
+
+void plVisualScriptFunctionPanel::ScheduleRefresh()
 {
   // events fire in the middle of transactions; the list is rebuilt once the document has settled
   if (m_bRefreshPending)
     return;
 
   m_bRefreshPending = true;
-  QTimer::singleShot(0, this, [this]()
+  Defer([this]()
     {
       m_bRefreshPending = false;
-      Refresh();
-    });
+      Refresh(); });
 }
 
-void plQtVisualScriptFunctionPanel::Refresh()
+void plVisualScriptFunctionPanel::Refresh()
 {
-  m_bRefreshing = true;
-  m_pList->clear();
+  m_Entries.Clear();
 
   if (m_pManager->m_bIsLibrary == false)
   {
-    QListWidgetItem* pRoot = new QListWidgetItem(QIcon(":/EditorPluginVisualScript/Icons/SubGraph.svg"), m_pManager->GetRootGraphName().GetData(), m_pList);
-    pRoot->setFlags(pRoot->flags() | Qt::ItemIsEditable);
-    pRoot->setToolTip("The event graph: event and message handlers live here");
-    pRoot->setData(s_iGuidRole, QByteArray());
-    QFont font = pRoot->font();
-    font.setBold(true);
-    pRoot->setFont(font);
+    Entry& root = m_Entries.ExpandAndGetRef();
+    root.m_uiItem = s_uiEventGraphItem;
+    root.m_sName = m_pManager->GetRootGraphName();
+    root.m_sTooltip = "The event graph: event and message handlers live here";
   }
 
   plHybridArray<const plDocumentObject*, 16> entries;
@@ -197,28 +410,27 @@ void plQtVisualScriptFunctionPanel::Refresh()
 
   for (const plDocumentObject* pEntry : entries)
   {
-    plString sName = m_pManager->GetFunctionName(pEntry);
-    if (sName.IsEmpty())
-      sName = "<unnamed>";
+    Entry& entry = m_Entries.ExpandAndGetRef();
+    entry.m_Guid = pEntry->GetGuid();
+    entry.m_uiItem = GetItemId(entry.m_Guid);
+    entry.m_sName = m_pManager->GetFunctionName(pEntry);
 
-    QListWidgetItem* pItem = new QListWidgetItem(QIcon(":/EditorPluginVisualScript/Icons/Function.svg"), sName.GetData(), m_pList);
-    pItem->setFlags(pItem->flags() | Qt::ItemIsEditable);
-
-    const plUuid guid = pEntry->GetGuid();
-    pItem->setData(s_iGuidRole, QByteArray(reinterpret_cast<const char*>(&guid), sizeof(plUuid)));
+    if (entry.m_sName.IsEmpty())
+      entry.m_sName = "<unnamed>";
 
     if (m_pManager->IsCoroutine(pEntry))
-      pItem->setToolTip("Coroutine function");
+      entry.m_sTooltip = "Coroutine function";
   }
 
-  m_bRefreshing = false;
+  if (m_pTree)
+    m_pTree->Refresh();
 
-  SetCurrentScope(m_pScene->GetCurrentScope());
+  SetCurrentScope(m_pGraph->GetCurrentScope());
 }
 
-void plQtVisualScriptFunctionPanel::ShowGraph(const plUuid& scope)
+void plVisualScriptFunctionPanel::ShowGraph(const plUuid& scope)
 {
-  m_pScene->NavigateToScope(scope);
+  m_pGraph->NavigateToScope(scope);
 
   // the function entry carries the inputs and outputs, so it is what the property grid should show
   if (scope.IsValid())
@@ -230,67 +442,33 @@ void plQtVisualScriptFunctionPanel::ShowGraph(const plUuid& scope)
   }
 }
 
-void plQtVisualScriptFunctionPanel::AddFunction()
+void plVisualScriptFunctionPanel::AddFunction()
 {
-  const plUuid guid = m_pScene->AddFunction("NewFunction");
+  const plUuid guid = m_pGraph->AddFunction("NewFunction");
   if (guid.IsValid() == false)
     return;
 
   ShowGraph(guid);
 
   Refresh();
-  if (QListWidgetItem* pItem = FindItem(guid))
+
+  // the tree can only edit a row once it is built into the surface
+  if (m_pTree && !m_vBuiltSize.IsZero())
   {
-    m_pList->editItem(pItem);
+    m_pTree->BeginRename(GetItemId(guid));
   }
 }
 
-void plQtVisualScriptFunctionPanel::RemoveFunction(const plUuid& functionGuid)
+void plVisualScriptFunctionPanel::RenameGraph(plUInt64 uiItem, plStringView sText)
 {
-  const plDocumentObject* pEntry = m_pManager->GetObject(functionGuid);
-  if (pEntry == nullptr || m_pManager->IsFunctionEntry(pEntry) == false)
+  const Entry* pEntry = FindEntry(uiItem);
+  if (pEntry == nullptr)
     return;
 
-  const plString sName = m_pManager->GetFunctionName(pEntry);
-  if (plQtUiServices::GetSingleton()->MessageBoxQuestion(plFmt("Remove the function '{}' and everything in its graph?", sName), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-    return;
+  plStringBuilder sNewName = sText;
+  sNewName.Trim();
 
-  m_pScene->RemoveFunction(functionGuid);
-}
-
-void plQtVisualScriptFunctionPanel::OnAddClicked()
-{
-  AddFunction();
-}
-
-void plQtVisualScriptFunctionPanel::OnRemoveClicked()
-{
-  const plUuid guid = GetItemGuid(m_pList->currentItem());
-  if (guid.IsValid())
-  {
-    RemoveFunction(guid);
-  }
-}
-
-void plQtVisualScriptFunctionPanel::OnItemClicked(QListWidgetItem* pItem)
-{
-  if (m_bRefreshing || pItem == nullptr)
-    return;
-
-  const plUuid guid = GetItemGuid(pItem);
-  if (guid == m_pScene->GetCurrentScope())
-    return;
-
-  ShowGraph(guid);
-}
-
-void plQtVisualScriptFunctionPanel::OnItemChanged(QListWidgetItem* pItem)
-{
-  if (m_bRefreshing || pItem == nullptr)
-    return;
-
-  const plString sNewName = pItem->text().trimmed().toUtf8().data();
-  const plUuid guid = GetItemGuid(pItem);
+  const plUuid guid = pEntry->m_Guid;
 
   if (guid.IsValid())
   {
@@ -300,10 +478,14 @@ void plQtVisualScriptFunctionPanel::OnItemChanged(QListWidgetItem* pItem)
       return;
     }
 
-    m_pScene->RenameFunction(guid, sNewName);
+    m_pGraph->RenameFunction(guid, sNewName);
   }
   else
   {
+    // the tree commits unchanged names too; those leave the document alone
+    if (sNewName == m_pManager->GetRootGraphName())
+      return;
+
     // the event graph's name is a document property
     if (m_pManager->GetRootObject()->GetChildren().IsEmpty())
       return;
@@ -311,7 +493,7 @@ void plQtVisualScriptFunctionPanel::OnItemChanged(QListWidgetItem* pItem)
     const plDocumentObject* pProperties = m_pManager->GetRootObject()->GetChildren()[0];
     plObjectAccessorBase* pAccessor = m_pDocument->GetObjectAccessor();
     pAccessor->StartTransaction("Rename Graph");
-    if (pAccessor->SetValueByName(pProperties, "GraphName", sNewName).Failed())
+    if (pAccessor->SetValueByName(pProperties, "GraphName", plString(sNewName)).Failed())
       pAccessor->CancelTransaction();
     else
       pAccessor->FinishTransaction();
@@ -320,24 +502,27 @@ void plQtVisualScriptFunctionPanel::OnItemChanged(QListWidgetItem* pItem)
   ScheduleRefresh();
 }
 
-void plQtVisualScriptFunctionPanel::OnContextMenu(const QPoint& pos)
+void plVisualScriptFunctionPanel::RemoveSelectedFunction()
 {
-  QListWidgetItem* pItem = m_pList->itemAt(pos);
-  const plUuid guid = GetItemGuid(pItem);
-
-  QMenu menu(this);
-  QAction* pAdd = menu.addAction("Add Function");
-  QAction* pRename = pItem != nullptr ? menu.addAction("Rename") : nullptr;
-  QAction* pRemove = guid.IsValid() ? menu.addAction("Remove Function") : nullptr;
-
-  QAction* pChosen = menu.exec(m_pList->viewport()->mapToGlobal(pos));
-  if (pChosen == nullptr)
+  const Entry* pEntry = GetSelectedEntry();
+  if (pEntry == nullptr || !pEntry->m_Guid.IsValid())
     return;
 
-  if (pChosen == pAdd)
-    AddFunction();
-  else if (pChosen == pRename)
-    m_pList->editItem(pItem);
-  else if (pChosen == pRemove)
-    RemoveFunction(guid);
+  // the question is a modal box; it opens outside of the surface's event dispatch
+  const plUuid guid = pEntry->m_Guid;
+  Defer([this, guid]()
+    { RemoveFunction(guid); });
+}
+
+void plVisualScriptFunctionPanel::RemoveFunction(const plUuid& functionGuid)
+{
+  const plDocumentObject* pEntry = m_pManager->GetObject(functionGuid);
+  if (pEntry == nullptr || m_pManager->IsFunctionEntry(pEntry) == false)
+    return;
+
+  const plString sName = m_pManager->GetFunctionName(pEntry);
+  if (plEditorUiServices::MessageBoxQuestion(plFmt("Remove the function '{}' and everything in its graph?", sName), plEditorUiMessageButton::Yes | plEditorUiMessageButton::No, plEditorUiMessageButton::No) != plEditorUiMessageButton::Yes)
+    return;
+
+  m_pGraph->RemoveFunction(functionGuid);
 }

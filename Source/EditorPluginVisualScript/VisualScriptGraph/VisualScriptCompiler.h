@@ -10,9 +10,16 @@ public:
 
   void InitModule(plStringView sBaseClassName, plStringView sScriptClassName);
 
+  /// The asset the debug table names, so runtime errors and breakpoints find their graph.
+  void SetDebugAsset(plStringView sAsset) { m_Module.m_sDebugAsset = sAsset; }
+
   plResult AddFunction(plStringView sName, const plDocumentObject* pEntryObject, const plDocumentObject* pParentObject = nullptr);
 
   plResult Compile(plStringView sDebugAstOutputPath = plStringView());
+
+  /// The graph node the compiler is working on in this thread, or null between nodes.
+  /// Errors logged while compiling belong to this node.
+  static const plDocumentObject* GetCurrentNode();
 
   struct CompiledFunction
   {
@@ -20,6 +27,7 @@ public:
     plEnum<plVisualScriptNodeDescription::Type> m_Type;
     plEnum<plScriptCoroutineCreationMode> m_CoroutineCreationMode;
     plDynamicArray<plVisualScriptNodeDescription> m_NodeDescriptions;
+    plDynamicArray<plUuid> m_NodeGuids; ///< the graph node of each node description; invalid for nodes the compiler added
     plVisualScriptDataDescription m_LocalDataDesc;
   };
 
@@ -31,6 +39,7 @@ public:
 
     plString m_sBaseClassName;
     plString m_sScriptClassName;
+    plString m_sDebugAsset;
     plHybridArray<CompiledFunction, 16> m_Functions;
 
     plVisualScriptDataDescription m_InstanceDataDesc;
@@ -168,7 +177,7 @@ public:
 private:
   bool IsCoroutineEntry(const plDocumentObject* pEntryObject, plHashSet<const plDocumentObject*>& inout_visitedEntries);
 
-  plResult BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions);
+  plResult BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions, plDynamicArray<plUuid>& out_NodeGuids);
 
   plResult FinalizeConstantData();
 

@@ -261,7 +261,22 @@ public:
 
   const plSharedPtr<const plVisualScriptDataDescription>& GetLocalDataDesc() const;
 
+  /// Where the graph came from, for runtime errors and the debugger. Empty when the module has no debug table.
+  struct DebugInfo
+  {
+    plString m_sAsset;               ///< asset GUID of the graph document
+    plString m_sFunction;            ///< the function this graph implements
+    plDynamicArray<plUuid> m_NodeGuids; ///< the editor node of each runtime node; invalid for nodes the compiler added
+  };
+
+  const DebugInfo& GetDebugInfo() const { return m_DebugInfo; }
+  DebugInfo& GetWritableDebugInfo() { return m_DebugInfo; }
+
+  /// The editor node of a runtime node, or an invalid GUID.
+  plUuid GetNodeGuid(plUInt32 uiNodeIndex) const { return uiNodeIndex < m_DebugInfo.m_NodeGuids.GetCount() ? m_DebugInfo.m_NodeGuids[uiNodeIndex] : plUuid(); }
+
 private:
+  DebugInfo m_DebugInfo;
   plArrayPtr<const Node> m_Nodes;
   plBlob m_Storage;
 
@@ -316,6 +331,17 @@ public:
   ExecResult PopFrame(const plVisualScriptGraphDescription::Node* pReturnNode);
 
   plUInt32 GetCallDepth() const { return m_CallStack.GetCount(); }
+
+  /// The graph and node that run right now.
+  const plVisualScriptGraphDescription* GetCurrentDesc() const { return m_pCurrentDesc; }
+  plUInt32 GetCurrentNodeIndex() const { return m_uiCurrentNode; }
+
+  /// Call frame uiFrame, 0 being the outermost: the calling graph and the index of its call node.
+  void GetCallFrame(plUInt32 uiFrame, const plVisualScriptGraphDescription*& out_pDesc, plUInt32& out_uiNodeIndex) const
+  {
+    out_pDesc = m_CallStack[uiFrame].m_pDesc;
+    out_uiNodeIndex = m_CallStack[uiFrame].m_uiCallNodeIndex;
+  }
   plArrayPtr<const plVariant> GetReturnValues() const { return m_ReturnValues; }
 
 private:

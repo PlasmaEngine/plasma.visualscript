@@ -42,6 +42,18 @@ void plVisualScriptInstance::SetInstanceVariable(const plHashedString& sName, co
   m_InstanceDataStorage.SetDataFromVariant(pInstanceData->m_DataOffset, convertedValue, 0);
 }
 
+void plVisualScriptInstance::GetInstanceVariables(plArrayMap<plHashedString, plVariant>& out_variables) const
+{
+  out_variables.Clear();
+  if (m_pInstanceDataMapping == nullptr)
+    return;
+
+  for (auto& it : m_pInstanceDataMapping->m_Content)
+  {
+    out_variables.Insert(it.Key(), m_InstanceDataStorage.GetDataAsVariant(it.Value().m_DataOffset, nullptr, 0));
+  }
+}
+
 plVariant plVisualScriptInstance::GetInstanceVariable(const plHashedString& sName)
 {
   if (m_pInstanceDataMapping == nullptr)

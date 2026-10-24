@@ -4,6 +4,7 @@
 #include <Foundation/Utilities/AssetFileHeader.h>
 #include <VisualScriptPlugin/Resources/VisualScriptClassResource.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptCoroutine.h>
+#include <VisualScriptPlugin/Runtime/VisualScriptDebugBackend.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptFunctionProperty.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptInstance.h>
 
@@ -21,6 +22,7 @@ PL_BEGIN_SUBSYSTEM_DECLARATION(VisualScript, VisualScriptResource)
   ON_CORESYSTEMS_STARTUP 
   {
     plResourceManager::RegisterResourceForAssetType("VisualScriptClass", plGetStaticRTTI<plVisualScriptClassResource>());
+    plVisualScriptDebugBackend::Startup();
     plResourceManager::RegisterResourceOverrideType(plGetStaticRTTI<plVisualScriptClassResource>(), [](const plStringBuilder& sResourceID) -> bool  {
         return sResourceID.HasExtension(".plBinVisualScriptClass");
       });
@@ -29,6 +31,7 @@ PL_BEGIN_SUBSYSTEM_DECLARATION(VisualScript, VisualScriptResource)
   ON_CORESYSTEMS_SHUTDOWN
   {
     plResourceManager::UnregisterResourceOverrideType(plGetStaticRTTI<plVisualScriptClassResource>());
+    plVisualScriptDebugBackend::Shutdown();
   }
 
 PL_END_SUBSYSTEM_DECLARATION;

@@ -3,7 +3,7 @@
 #include <Core/World/World.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptCompiler.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptTypeDeduction.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
 #include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryMetaData.h>
 #include <Foundation/CodeUtils/Expression/ExpressionByteCode.h>
 #include <Foundation/CodeUtils/Expression/ExpressionCompiler.h>
@@ -12,6 +12,33 @@
 #include <Foundation/IO/StringDeduplicationContext.h>
 #include <Foundation/SimdMath/SimdRandom.h>
 #include <Foundation/Utilities/DGMLWriter.h>
+
+namespace
+{
+  thread_local const plDocumentObject* s_pCurrentNode = nullptr;
+
+  /// Marks the node errors logged inside the scope are reported on.
+  class CurrentNodeScope
+  {
+  public:
+    explicit CurrentNodeScope(const plDocumentObject* pObject)
+      : m_pPrevious(s_pCurrentNode)
+    {
+      if (pObject != nullptr)
+        s_pCurrentNode = pObject;
+    }
+
+    ~CurrentNodeScope() { s_pCurrentNode = m_pPrevious; }
+
+  private:
+    const plDocumentObject* m_pPrevious;
+  };
+} // namespace
+
+const plDocumentObject* plVisualScriptCompiler::GetCurrentNode()
+{
+  return s_pCurrentNode;
+}
 
 namespace
 {
@@ -450,6 +477,20 @@ plResult plVisualScriptCompiler::CompiledModule::Serialize(plStreamWriter& inout
     chunk.EndChunk();
   }
 
+  // Optional: older readers skip it. Same function order as "FunctionGraphs".
+  {
+    chunk.BeginChunk("DebugTable", 1);
+    chunk << m_sDebugAsset;
+    chunk << m_Functions.GetCount();
+
+    for (plUInt32 i = m_Functions.GetCount(); i-- > 0;)
+    {
+      PL_SUCCEED_OR_RETURN(chunk.WriteArray(m_Functions[i].m_NodeGuids));
+    }
+
+    chunk.EndChunk();
+  }
+
   chunk.EndStream();
 
   return stringDedup.End();
@@ -549,7 +590,7 @@ plResult plVisualScriptCompiler::Compile(plStringView sDebugAstOutputPath)
 
     DumpAST(pEntryAstNode, sDebugAstOutputPath, function.m_sName, "_04_LocalVarsAssigned");
 
-    PL_SUCCEED_OR_RETURN(BuildNodeDescriptions(pEntryAstNode, function.m_NodeDescriptions));
+    PL_SUCCEED_OR_RETURN(BuildNodeDescriptions(pEntryAstNode, function.m_NodeDescriptions, function.m_NodeGuids));
 
     DumpGraph(function.m_NodeDescriptions, sDebugAstOutputPath, function.m_sName, "_Graph");
 
@@ -592,6 +633,8 @@ plVisualScriptCompiler::AstNode* plVisualScriptCompiler::CreateAstNodeFromObject
 
   if (bImplicitOnly && !pNodeDesc->m_bImplicitExecution)
     return nullptr;
+
+  CurrentNodeScope nodeScope(pObject);
 
   auto& astNode = CreateAstNode(pNodeDesc->m_Type, FinalizeDataType(m_NodeManager.GetDeductedType(pObject)), pNodeDesc->m_bImplicitExecution);
   astNode.m_pObject = pObject;
@@ -680,6 +723,8 @@ void plVisualScriptCompiler::AddConstantDataInput(AstNode& node, const plVariant
 
 plResult plVisualScriptCompiler::AddConstantDataInput(AstNode& node, const plDocumentObject* pObject, const plVisualScriptPin* pPin, plVisualScriptDataType::Enum dataType)
 {
+  CurrentNodeScope nodeScope(pObject);
+
   plStringView sPropertyName = pPin->HasDynamicPinProperty() ? pPin->GetDynamicPinProperty() : pPin->GetName();
 
   plVariant value = pObject->GetTypeAccessor().GetValue(sPropertyName);
@@ -984,6 +1029,8 @@ plResult plVisualScriptCompiler::BuildDataStack(AstNode* pEntryAstNode, AstNode*
     const plVisualScriptNodeRegistry::NodeDesc* pNodeDesc = objCtx.m_pNodeDesc;
 
     objectStack.PopBack();
+
+    CurrentNodeScope nodeScope(pObject);
 
     AstNode* pAstNode = nullptr;
     PL_VERIFY(m_CompilationState.m_DataObjectToAstNode.TryGetValue(pObject, pAstNode), "Implementation error");
@@ -2055,14 +2102,17 @@ plResult plVisualScriptCompiler::CopyOutputsToInputs(AstNode* pEntryAstNode)
     });
 }
 
-plResult plVisualScriptCompiler::BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions)
+plResult plVisualScriptCompiler::BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions, plDynamicArray<plUuid>& out_NodeGuids)
 {
   plHashTable<const AstNode*, plUInt32> astNodeToNodeDescIndices;
   out_NodeDescriptions.Clear();
+  out_NodeGuids.Clear();
 
   auto CreateNodeDesc = [&](const AstNode& astNode, plUInt32& out_uiNodeDescIndex) -> plResult
   {
     out_uiNodeDescIndex = out_NodeDescriptions.GetCount();
+
+    out_NodeGuids.PushBack(astNode.m_pObject != nullptr ? astNode.m_pObject->GetGuid() : plUuid());
 
     auto& nodeDesc = out_NodeDescriptions.ExpandAndGetRef();
     nodeDesc.m_Type = astNode.m_Type;
@@ -2163,6 +2213,7 @@ plResult plVisualScriptCompiler::TraverseAstDepthFirst(AstNode* pEntryAstNode, p
 
     AstNode* pOldAstNode = pAstNode;
 
+    CurrentNodeScope nodeScope(pAstNode->m_pObject);
     VisitorResult r = func(pAstNode);
     if (r == VisitorResult::Error)
       return PL_FAILURE;
@@ -2245,6 +2296,7 @@ plResult plVisualScriptCompiler::TraverseAstTopologicalOrder(const AstNode* pEnt
 
     PL_VERIFY(m_CompilationState.m_VisitedNodes.Insert(pAstNode) == false, "");
 
+    CurrentNodeScope nodeScope(pAstNode->m_pObject);
     VisitorResult r = func(pAstNode);
     if (r == VisitorResult::Error)
       return PL_FAILURE;

@@ -2,7 +2,7 @@
 
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraph.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptTypeDeduction.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
 
 // static
 plVisualScriptDataType::Enum plVisualScriptTypeDeduction::DeductFromNodeDataType(const plVisualScriptPin& pin)

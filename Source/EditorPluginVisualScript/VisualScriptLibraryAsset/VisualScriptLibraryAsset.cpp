@@ -3,10 +3,12 @@
 #include <EditorPluginVisualScript/VisualScriptClassAsset/VisualScriptClassAsset.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptCommands.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptCompiler.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphQt.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphView.h>
 #include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryAsset.h>
 #include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryMetaData.h>
-#include <GuiFoundation/VisualGraph/Scene.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptDiagnostics.h>
+#include <Foundation/Utilities/ConversionUtils.h>
+#include <GuiFoundation/EngineUi/EngineGraphView.h>
 
 // clang-format off
 PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptLibraryAssetProperties, 1, plRTTIDefaultAllocator<plVisualScriptLibraryAssetProperties>)
@@ -32,6 +34,16 @@ plVisualScriptLibraryAssetDocument::plVisualScriptLibraryAssetDocument(plStringV
 
 plTransformStatus plVisualScriptLibraryAssetDocument::InternalTransformAsset(plStreamWriter& stream, plStringView sOutputTag, const plPlatformProfile* pAssetProfile, const plAssetFileHeader& AssetHeader, plBitflags<plTransformFlags> transformFlags)
 {
+  plVisualScriptDiagnosticCapture capture;
+  plTransformStatus status = CompileGraph(stream);
+  if (status.Failed())
+    capture.AddFailure(status.m_sMessage);
+  capture.Report(this);
+  return status;
+}
+
+plTransformStatus plVisualScriptLibraryAssetDocument::CompileGraph(plStreamWriter& stream)
+{
   auto pManager = static_cast<plVisualScriptNodeManager*>(GetObjectManager());
 
   PL_SUCCEED_OR_RETURN(pManager->ValidateGraph());
@@ -48,6 +60,8 @@ plTransformStatus plVisualScriptLibraryAssetDocument::InternalTransformAsset(plS
 
   // no base class: a library has no owner and no instance
   plVisualScriptCompiler compiler(*pManager);
+  plStringBuilder sAssetGuid;
+  compiler.SetDebugAsset(plConversionUtils::ToString(GetGuid(), sAssetGuid));
   compiler.InitModule(plStringView(), sScriptClassName);
 
   PL_SUCCEED_OR_RETURN(plVisualScriptClassAssetDocument::AddEntryFunctions(*pManager, compiler, plHashedString()));
@@ -149,5 +163,5 @@ bool plVisualScriptLibraryAssetDocument::CopySelectedObjects(plAbstractObjectGra
 bool plVisualScriptLibraryAssetDocument::Paste(const plArrayPtr<PasteInfo>& info, const plAbstractObjectGraph& objectGraph, bool bAllowPickedPosition, plStringView sMimeType)
 {
   plVisualScriptNodeManager* pManager = static_cast<plVisualScriptNodeManager*>(GetObjectManager());
-  return plVisualScriptGraphClipboard::PasteObjects(*pManager, info, objectGraph, plQtVisualGraphScene::GetLastMouseInteractionPos(), bAllowPickedPosition);
+  return plVisualScriptGraphClipboard::PasteObjects(*pManager, info, objectGraph, plEditorUiGraphView::GetLastPointerGraphPos(), bAllowPickedPosition);
 }

@@ -1,6 +1,8 @@
 #pragma once
 
-#include <GuiFoundation/PropertyGrid/Implementation/PropertyWidget.moc.h>
+#include <EditorPluginVisualScript/EditorPluginVisualScriptDLL.h>
+#include <Foundation/DataProcessing/Stream/ProcessingStream.h>
+#include <Foundation/Reflection/Reflection.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptDataType.h>
 
 struct plVisualScriptVariableType
@@ -97,43 +99,6 @@ struct plHashHelper<plVisualScriptVariableTypeDeclaration>
 class plVisualScriptVariableAttribute : public plTypeWidgetAttribute
 {
   PL_ADD_DYNAMIC_REFLECTION(plVisualScriptVariableAttribute, plTypeWidgetAttribute);
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-class plQtVisualScriptVariableWidget : public plQtVariantPropertyWidget
-{
-  Q_OBJECT;
-
-public:
-  plQtVisualScriptVariableWidget();
-  virtual ~plQtVisualScriptVariableWidget();
-
-  virtual void InternalSetValue(const plVariant& value) override;
-  virtual plResult GetVariantTypeDisplayName(plVariantType::Enum type, plStringBuilder& out_sName) const override;
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-class plQtVisualScriptVariableTypeDeclarationWidget : public plQtStandardPropertyWidget
-{
-  Q_OBJECT;
-
-public:
-  plQtVisualScriptVariableTypeDeclarationWidget();
-  virtual ~plQtVisualScriptVariableTypeDeclarationWidget();
-
-  virtual void OnInit() override;
-  virtual void InternalSetValue(const plVariant& value) override;
-
-private:
-  void ChangeType();
-
-  QHBoxLayout* m_pLayout = nullptr;
-  QComboBox* m_pTypeList = nullptr;
-  QMenu* m_pCategoryList = nullptr;
-  QPushButton* m_pCategoryButton = nullptr;
-  QPushButton* m_pVisibilityButton = nullptr;
 };
 
 //////////////////////////////////////////////////////////////////////////////

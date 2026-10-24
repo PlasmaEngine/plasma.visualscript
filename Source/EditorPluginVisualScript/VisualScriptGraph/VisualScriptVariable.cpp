@@ -1,11 +1,10 @@
 #include <EditorPluginVisualScript/EditorPluginVisualScriptPCH.h>
 
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
 
 #include <Foundation/Serialization/AbstractObjectGraph.h>
 #include <Foundation/Serialization/GraphPatch.h>
 #include <Foundation/Types/VariantTypeRegistry.h>
-#include <GuiFoundation/PropertyGrid/PropertyGridWidget.moc.h>
 #include <GuiFoundation/PropertyGrid/PropertyMetaState.h>
 #include <ToolsFoundation/Object/ObjectAccessorBase.h>
 
@@ -115,201 +114,6 @@ PL_BEGIN_DYNAMIC_REFLECTED_TYPE(plVisualScriptVariableAttribute, 1, plRTTIDefaul
 PL_END_DYNAMIC_REFLECTED_TYPE;
 // clang-format on
 
-//////////////////////////////////////////////////////////////////////////
-
-plQtVisualScriptVariableWidget::plQtVisualScriptVariableWidget() = default;
-plQtVisualScriptVariableWidget::~plQtVisualScriptVariableWidget() = default;
-
-void plQtVisualScriptVariableWidget::InternalSetValue(const plVariant& value)
-{
-  plQtVariantPropertyWidget::InternalSetValue(value);
-
-  bool bEnableTypeSelection = true;
-  for (const auto& item : m_Items)
-  {
-    plVariant typeDeclVar;
-    if (m_pObjectAccessor->GetValueByName(item.m_pObject, "Type", typeDeclVar, item.m_Index).Failed())
-      break;
-
-    if (typeDeclVar.GetReflectedType() != plGetStaticRTTI<plVisualScriptVariableTypeDeclaration>())
-      break;
-
-    auto typeDecl = typeDeclVar.Get<plVisualScriptVariableTypeDeclaration>();
-    if (typeDecl.m_Type != plVisualScriptVariableType::Variant || typeDecl.m_Category != plVisualScriptVariableCategory::Member)
-    {
-      bEnableTypeSelection = false;
-      break;
-    }
-  }
-
-  EnableTypeSelection(bEnableTypeSelection);
-}
-
-plResult plQtVisualScriptVariableWidget::GetVariantTypeDisplayName(plVariantType::Enum type, plStringBuilder& out_sName) const
-{
-  if (type == plVariantType::Int8 ||
-      type == plVariantType::Int16 ||
-      type == plVariantType::UInt16 ||
-      type == plVariantType::UInt32 ||
-      type == plVariantType::UInt64 ||
-      type == plVariantType::StringView ||
-      type == plVariantType::TempHashedString)
-    return PL_FAILURE;
-
-  plVisualScriptDataType::Enum dataType = plVisualScriptDataType::FromVariantType(type);
-  if (type != plVariantType::Invalid && dataType == plVisualScriptDataType::Invalid)
-    return PL_FAILURE;
-
-  const plRTTI* pVisualScriptDataType = plGetStaticRTTI<plVisualScriptDataType>();
-  if (plReflectionUtils::EnumerationToString(pVisualScriptDataType, dataType, out_sName) == false)
-    return PL_FAILURE;
-
-  return PL_SUCCESS;
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-plQtVisualScriptVariableTypeDeclarationWidget::plQtVisualScriptVariableTypeDeclarationWidget()
-{
-  m_pLayout = new QHBoxLayout(this);
-  m_pLayout->setContentsMargins(0, 0, 0, 4);
-  m_pLayout->setSpacing(1);
-  setLayout(m_pLayout);
-
-  m_pTypeList = new QComboBox(this);
-  m_pTypeList->installEventFilter(this);
-  m_pLayout->addWidget(m_pTypeList);
-
-  m_pCategoryList = new QMenu(this);
-
-  m_pCategoryButton = new QPushButton(this);
-  m_pCategoryButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-  m_pCategoryButton->installEventFilter(this);
-  m_pCategoryButton->setMenu(m_pCategoryList);
-  m_pLayout->addWidget(m_pCategoryButton);
-
-  m_pVisibilityButton = new QPushButton(this);
-  m_pVisibilityButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-  QIcon icon;
-  icon.addFile(QString::fromUtf8(":/EditorFramework/Icons/ObjectsHidden.svg"), QSize(), QIcon::Normal, QIcon::Off);
-  icon.addFile(QString::fromUtf8(":/EditorFramework/Icons/ObjectsVisible.svg"), QSize(), QIcon::Normal, QIcon::On);
-  m_pVisibilityButton->setIcon(icon);
-  m_pVisibilityButton->setCheckable(true);
-  m_pVisibilityButton->setToolTip(QCoreApplication::translate("VisualScriptVariable", "Make variable public or private", nullptr));
-  m_pLayout->addWidget(m_pVisibilityButton);
-}
-
-plQtVisualScriptVariableTypeDeclarationWidget::~plQtVisualScriptVariableTypeDeclarationWidget() = default;
-
-void plQtVisualScriptVariableTypeDeclarationWidget::OnInit()
-{
-  plHybridArray<plReflectionUtils::EnumKeyValuePair, 16> enumValues;
-
-  {
-    plReflectionUtils::GetEnumKeysAndValues(plGetStaticRTTI<plVisualScriptVariableType>(), enumValues);
-    for (auto& val : enumValues)
-    {
-      m_pTypeList->addItem(plMakeQString(plTranslate(val.m_sKey)), val.m_iValue);
-    }
-
-    connect(m_pTypeList, &QComboBox::currentIndexChanged, [this](int iIndex)
-      { ChangeType(); });
-  }
-
-  {
-    QActionGroup* pActionGroup = new QActionGroup(this);
-    plReflectionUtils::GetEnumKeysAndValues(plGetStaticRTTI<plVisualScriptVariableCategory>(), enumValues);
-
-    QString sIcons[] = {
-      ":/EditorPluginVisualScript/Icons/VariableCategoryMember.svg",
-      ":/EditorPluginVisualScript/Icons/VariableCategoryArray.svg",
-      ":/EditorPluginVisualScript/Icons/VariableCategoryMap.svg"};
-
-    PL_ASSERT_DEV(PL_ARRAY_SIZE(sIcons) >= enumValues.GetCount(), "Need exactly one icon per category");
-
-    for (plUInt32 i = 0; i < enumValues.GetCount(); ++i)
-    {
-      QIcon icon;
-      icon.addFile(sIcons[i]);
-
-      QAction* pAction = new QAction(icon, plMakeQString(plTranslate(enumValues[i].m_sKey)), this);
-      pAction->setCheckable(true);
-
-      connect(pAction, &QAction::triggered, [this]()
-        { ChangeType(); });
-
-      pActionGroup->addAction(pAction);
-      m_pCategoryList->addAction(pAction);
-    }
-  }
-
-  connect(m_pVisibilityButton, &QPushButton::toggled, [this](bool)
-    { ChangeType(); });
-}
-
-void plQtVisualScriptVariableTypeDeclarationWidget::InternalSetValue(const plVariant& value)
-{
-  auto typeDecl = value.Get<plVisualScriptVariableTypeDeclaration>();
-
-  {
-    plQtScopedBlockSignals bs(m_pTypeList);
-    for (int i = 0; i < m_pTypeList->count(); ++i)
-    {
-      if (m_pTypeList->itemData(i).toInt() == typeDecl.m_Type)
-      {
-        m_pTypeList->setCurrentIndex(i);
-        break;
-      }
-    }
-  }
-
-  {
-    plQtScopedBlockSignals bs(m_pCategoryList);
-    QAction* pAction = m_pCategoryList->actions()[typeDecl.m_Category];
-    pAction->setChecked(true);
-
-    m_pCategoryButton->setIcon(pAction->icon());
-  }
-
-  {
-    plQtScopedBlockSignals bs(m_pVisibilityButton);
-    m_pVisibilityButton->setChecked(typeDecl.m_bPublic);
-  }
-}
-
-void plQtVisualScriptVariableTypeDeclarationWidget::ChangeType()
-{
-  QAction* pAction = nullptr;
-  plUInt32 uiCategory = 0;
-  for (auto action : m_pCategoryList->actions())
-  {
-    if (action->isChecked())
-    {
-      pAction = action;
-      break;
-    }
-    ++uiCategory;
-  }
-  PL_ASSERT_DEV(pAction != nullptr, "No category selected");
-
-  m_pObjectAccessor->StartTransaction("Change variable type");
-
-  for (const auto& item : m_Items)
-  {
-    plVisualScriptVariableTypeDeclaration typeDecl;
-
-    typeDecl.m_Type = static_cast<plVisualScriptVariableType::Enum>(m_pTypeList->currentData().toInt());
-    typeDecl.m_Category = static_cast<plVisualScriptVariableCategory::Enum>(uiCategory);
-    typeDecl.m_bPublic = m_pVisibilityButton->isChecked();
-
-    m_pObjectAccessor->SetValue(item.m_pObject, m_pProp, typeDecl, item.m_Index).AssertSuccess();
-  }
-
-  m_pObjectAccessor->FinishTransaction();
-
-  m_pCategoryButton->setIcon(pAction->icon());
-}
-
 ///////////////////////////////////////////////////////////////////////////
 
 // clang-format off
@@ -401,15 +205,9 @@ void plVisualScriptVariable::ConvertDefaultValue(plVariant& inout_defaultValue, 
 
 /////////////////////////////////////////////////////////////////////////////
 
-static plQtPropertyWidget* VisualScriptVariableTypeCreator(const plRTTI* pRtti)
-{
-  return new plQtVisualScriptVariableWidget();
-}
-
-static plQtPropertyWidget* VisualScriptVariableTypeDeclarationCreator(const plRTTI* pRtti)
-{
-  return new plQtVisualScriptVariableTypeDeclarationWidget();
-}
+// The editor's property grid shows plVisualScriptVariableTypeDeclaration as a type list with
+// category and visibility buttons, and limits a variable's default value to the variant types
+// visual scripts support (plVisualScriptVariableAttribute).
 
 void plVisualScriptVariable_PropertyMetaStateEventHandler(plPropertyMetaStateEvent& e)
 {
@@ -440,17 +238,11 @@ PL_BEGIN_SUBSYSTEM_DECLARATION(EditorPluginVisualScript, VisualScriptVariable)
 
   ON_CORESYSTEMS_STARTUP
   {
-    plQtPropertyGridWidget::GetFactory().RegisterCreator(plGetStaticRTTI<plVisualScriptVariableAttribute>(), VisualScriptVariableTypeCreator);
-    plQtPropertyGridWidget::GetFactory().RegisterCreator(plGetStaticRTTI<plVisualScriptVariableTypeDeclaration>(), VisualScriptVariableTypeDeclarationCreator);
-
     plPropertyMetaState::GetSingleton()->m_Events.AddEventHandler(plVisualScriptVariable_PropertyMetaStateEventHandler);
   }
 
   ON_CORESYSTEMS_SHUTDOWN
   {
-    plQtPropertyGridWidget::GetFactory().UnregisterCreator(plGetStaticRTTI<plVisualScriptVariableAttribute>());
-    plQtPropertyGridWidget::GetFactory().UnregisterCreator(plGetStaticRTTI<plVisualScriptVariableTypeDeclaration>());
-
     plPropertyMetaState::GetSingleton()->m_Events.RemoveEventHandler(plVisualScriptVariable_PropertyMetaStateEventHandler);
   }
 

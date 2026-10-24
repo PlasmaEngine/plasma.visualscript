@@ -3,6 +3,9 @@
 #include <Core/Scripting/ScriptWorldModule.h>
 #include <Foundation/Configuration/CVar.h>
 #include <Foundation/IO/StringDeduplicationContext.h>
+#include <Core/Scripting/ScriptDebugger.h>
+#include <Foundation/Types/ScopeExit.h>
+#include <VisualScriptPlugin/Runtime/VisualScriptDebugBackend.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptInstance.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptNodeUserData.h>
 
@@ -526,11 +529,19 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
 
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
   plUInt32 uiCounter = 0;
+
+  plVisualScriptDebugBackend::PushContext(this);
+  PL_SCOPE_EXIT(plVisualScriptDebugBackend::PopContext());
 #endif
 
   auto pNode = m_pCurrentDesc->GetNode(m_uiCurrentNode);
   while (pNode != nullptr)
   {
+#if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+    if (plScriptDebugger::IsAttached())
+      plVisualScriptDebugBackend::GetSingleton()->OnNode(*this);
+#endif
+
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
     if (pNode->m_Function == nullptr)
     {
@@ -559,6 +570,10 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
 
     if (result.m_NextExecAndState < ExecResult::State::Completed)
     {
+#if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+      if (result.m_NextExecAndState == ExecResult::State::Error)
+        plVisualScriptDebugBackend::OnError(*this);
+#endif
       return result;
     }
 

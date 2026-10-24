@@ -4,7 +4,7 @@
 #include <EditorFramework/Assets/AssetCurator.h>
 #include <EditorPluginVisualScript/VisualScriptClassAsset/VisualScriptClassAsset.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraph.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
 #include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryMetaData.h>
 #include <Foundation/SimdMath/SimdRandom.h>
 #include <Foundation/Utilities/DGMLWriter.h>

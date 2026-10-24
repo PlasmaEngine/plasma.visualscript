@@ -1,9 +1,9 @@
 #include <EditorPluginVisualScript/EditorPluginVisualScriptPCH.h>
 
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptNodeRegistry.h>
-#include <EditorFramework/EditorApp/EditorApp.moc.h>
+#include <EditorFramework/EditorApp/EditorApp.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptTypeDeduction.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
 
 #include <GuiFoundation/UIServices/DynamicStringEnum.h>
 #include <ToolsFoundation/VisualGraph/VisualGraphObjectManager.h>
@@ -12,8 +12,32 @@
 #include <Core/Scripting/ScriptAttributes.h>
 #include <Core/Scripting/ScriptCoroutine.h>
 #include <Foundation/CodeUtils/Expression/ExpressionDeclarations.h>
+#include <Foundation/Configuration/Startup.h>
 #include <Foundation/Profiling/Profiling.h>
 #include <Foundation/SimdMath/SimdRandom.h>
+
+// The registry is shared by the document model and the engine UI. Its lifetime must not
+// depend on the former Qt graph factories.
+// clang-format off
+PL_BEGIN_SUBSYSTEM_DECLARATION(EditorPluginVisualScript, NodeRegistry)
+
+  BEGIN_SUBSYSTEM_DEPENDENCIES
+    "ReflectedTypeManager"
+  END_SUBSYSTEM_DEPENDENCIES
+
+  ON_CORESYSTEMS_STARTUP
+  {
+    PL_DEFAULT_NEW(plVisualScriptNodeRegistry);
+  }
+
+  ON_CORESYSTEMS_SHUTDOWN
+  {
+    auto* pRegistry = plVisualScriptNodeRegistry::GetSingleton();
+    PL_DEFAULT_DELETE(pRegistry);
+  }
+
+PL_END_SUBSYSTEM_DECLARATION;
+// clang-format on
 
 namespace
 {
@@ -276,18 +300,16 @@ plVisualScriptNodeRegistry::plVisualScriptNodeRegistry()
   plPhantomRttiManager::s_Events.AddEventHandler(plMakeDelegate(&plVisualScriptNodeRegistry::PhantomTypeRegistryEventHandler, this));
   plEditorEngineProcessConnection::s_Events.AddEventHandler(
     plMakeDelegate(&plVisualScriptNodeRegistry::EngineProcessEventHandler, this));
-  m_IdleConnection = QObject::connect(
-    plQtEditorApp::GetSingleton(), &plQtEditorApp::IdleEvent, [this]()
-    {
-      FlushPendingBindingUpdates();
-    });
+  m_IdleSubscription = plEditorApp::GetSingleton()->m_IdleEvent.AddEventHandler([this](plEditorApp*)
+    { FlushPendingBindingUpdates(); });
 
   UpdateNodeTypes();
 }
 
 plVisualScriptNodeRegistry::~plVisualScriptNodeRegistry()
 {
-  QObject::disconnect(m_IdleConnection);
+  if (plEditorApp::GetSingleton() != nullptr)
+    plEditorApp::GetSingleton()->m_IdleEvent.RemoveEventHandler(m_IdleSubscription);
   plEditorEngineProcessConnection::s_Events.RemoveEventHandler(
     plMakeDelegate(&plVisualScriptNodeRegistry::EngineProcessEventHandler, this));
   plPhantomRttiManager::s_Events.RemoveEventHandler(plMakeDelegate(&plVisualScriptNodeRegistry::PhantomTypeRegistryEventHandler, this));

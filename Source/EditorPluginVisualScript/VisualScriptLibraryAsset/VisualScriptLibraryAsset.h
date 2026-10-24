@@ -22,6 +22,7 @@ public:
 
 protected:
   virtual plTransformStatus InternalTransformAsset(plStreamWriter& stream, plStringView sOutputTag, const plPlatformProfile* pAssetProfile, const plAssetFileHeader& AssetHeader, plBitflags<plTransformFlags> transformFlags) override;
+  plTransformStatus CompileGraph(plStreamWriter& stream);
   virtual void UpdateAssetDocumentInfo(plAssetDocumentInfo* pInfo) const override;
 
   virtual void GetSupportedMimeTypesForPasting(plHybridArray<plString, 4>& out_MimeTypes) const override;

@@ -3,6 +3,8 @@
 #include <EditorPluginVisualScript/EditorPluginVisualScriptDLL.h>
 #include <GuiFoundation/Action/BaseActions.h>
 
+class plVisualScriptGraphHost;
+
 /// Toolbar and menu actions of the visual script editor: collapse to sub-graph, expand sub-graph, go to parent graph.
 class plVisualScriptActions
 {
@@ -38,5 +40,8 @@ public:
   virtual void Execute(const plVariant& value) override;
 
 private:
+  /// The graph shown by the action's window: the controller of its engine graph view.
+  plVisualScriptGraphHost* FindGraph() const;
+
   ButtonType m_ButtonType;
 };
