@@ -265,6 +265,7 @@ public:
   struct DebugInfo
   {
     plString m_sAsset;               ///< asset GUID of the graph document
+    plUInt64 m_uiAssetHash = 0;      ///< plHashingUtils::StringHash(m_sAsset), how the editor names a watched graph
     plString m_sFunction;            ///< the function this graph implements
     plDynamicArray<plUuid> m_NodeGuids; ///< the editor node of each runtime node; invalid for nodes the compiler added
   };

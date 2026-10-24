@@ -181,6 +181,18 @@ namespace
   }
 } // namespace
 
+/// A script cost for the live profile: "0.4 µs", "38 µs", "1.25 ms".
+static void FormatScriptTime(plTime time, plStringBuilder& inout_sText)
+{
+  const double fMicroseconds = time.GetMicroseconds();
+  if (fMicroseconds < 10.0)
+    inout_sText.AppendFormat("{} \xC2\xB5s", plArgF(fMicroseconds, 1));
+  else if (fMicroseconds < 1000.0)
+    inout_sText.AppendFormat("{} \xC2\xB5s", plArgF(fMicroseconds, 0));
+  else
+    inout_sText.AppendFormat("{} ms", plArgF(fMicroseconds / 1000.0, 2));
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Look
 
@@ -1192,7 +1204,11 @@ plVisualScriptGraphController::plVisualScriptGraphController() = default;
 plVisualScriptGraphController::~plVisualScriptGraphController()
 {
   if (plScriptTools* pTools = plScriptTools::GetSingleton(); pTools != nullptr && m_ScriptToolsSubscription != 0)
+  {
     pTools->m_Events.RemoveEventHandler(m_ScriptToolsSubscription);
+    if (!m_sWatchedAsset.IsEmpty())
+      pTools->UnwatchFlow(m_sWatchedAsset);
+  }
 
   if (m_pManager != nullptr)
     const_cast<plVisualScriptNodeManager*>(GetScriptManager())->m_NodeChangedEvent.RemoveEventHandler(plMakeDelegate(&plVisualScriptGraphController::NodeChangedHandler, this));
@@ -1211,13 +1227,28 @@ void plVisualScriptGraphController::Init(const plVisualGraphObjectManager* pMana
   pScriptManager->SetCurrentViewScope(m_CurrentScope);
 
   if (plScriptTools* pTools = plScriptTools::GetSingleton(); pTools != nullptr && m_ScriptToolsSubscription == 0)
+  {
     m_ScriptToolsSubscription = pTools->m_Events.AddEventHandler(plMakeDelegate(&plVisualScriptGraphController::ScriptToolsEventHandler, this));
+
+    // the engine records this graph's live flow while it is shown
+    m_sWatchedAsset = GetAssetGuid();
+    pTools->WatchFlow(m_sWatchedAsset);
+  }
 }
 
 void plVisualScriptGraphController::ScriptToolsEventHandler(const plScriptToolsEvent& e)
 {
-  if (e.m_Type != plScriptToolsEvent::Type::VariablesChanged && e.m_Type != plScriptToolsEvent::Type::ReloadsChanged)
-    InvalidateLook();
+  if (e.m_Type == plScriptToolsEvent::Type::VariablesChanged || e.m_Type == plScriptToolsEvent::Type::ReloadsChanged)
+    return;
+
+  InvalidateLook();
+
+  // Flowing wires stop a moment after the last report; one more look then lets them fade when the game stops.
+  if (e.m_Type == plScriptToolsEvent::Type::FlowChanged)
+  {
+    m_FlowTimers.Restart(m_uiFlowFadeTimer, plTime::MakeFromMilliseconds(700), [this]()
+      { InvalidateLook(); });
+  }
 }
 
 plString plVisualScriptGraphController::GetAssetGuid() const
@@ -1326,7 +1357,28 @@ void plVisualScriptGraphController::GetNodeLook(const plDocumentObject* pNode, p
 
   // While stopped, the node of the selected frame is the one that runs.
   if (pTools->IsStopped() && pTools->GetSelectedFrame() < pTools->GetFrames().GetCount())
+  {
     out_look.m_bHighlighted = pTools->GetFrames()[pTools->GetSelectedFrame()].m_Location.m_NodeGuid == pNode->GetGuid();
+  }
+  else if (const float fRate = pTools->GetNodeFlowRate(m_sWatchedAsset, pNode->GetGuid()); fRate > 0.0f)
+  {
+    // Live profile: what the node costs, with everything it calls, then how often it runs. Nodes that run every frame
+    // show their cost per frame, the others their cost per run.
+    const float fFrameRate = pTools->GetFlowFrameRate();
+    const bool bEveryFrame = fFrameRate > 0.0f && plMath::Abs(fRate - fFrameRate) <= plMath::Max(1.0f, fFrameRate * 0.05f);
+    const plTime cost = bEveryFrame ? pTools->GetNodeFrameTime(m_sWatchedAsset, pNode->GetGuid()) : pTools->GetNodeRunTime(m_sWatchedAsset, pNode->GetGuid());
+
+    plStringBuilder sLine;
+    FormatScriptTime(cost, sLine);
+    if (bEveryFrame)
+      sLine.Append(" per frame \xC2\xB7 every frame");
+    else
+      sLine.AppendFormat(" per run \xC2\xB7 {} times/s", plArgF(fRate, fRate < 10.0f ? 1 : 0));
+
+    const double fMicroseconds = cost.GetMicroseconds();
+    const plColorGammaUB color = fMicroseconds < 10.0 ? plColorGammaUB(110, 196, 150) : (fMicroseconds < 100.0 ? plColorGammaUB(224, 180, 90) : plColorGammaUB(224, 96, 96));
+    out_look.m_BadgeLines.PushBack({sLine, color});
+  }
 }
 
 plColorGammaUB plVisualScriptGraphController::GetPinColor(const plVisualScriptPin& pin) const
@@ -1363,8 +1415,85 @@ void plVisualScriptGraphController::GetPinLook(const plVisualGraphPin& pin, plVi
 void plVisualScriptGraphController::GetConnectionLook(const plDocumentObject* pConnection, plVisualGraphConnectionLook& out_look) const
 {
   const plVisualGraphConnection& connection = m_pManager->GetConnection(pConnection);
-  out_look.m_SourceColor = GetPinColor(plStaticCast<const plVisualScriptPin&>(connection.GetSourcePin()));
+  const plVisualScriptPin& sourcePin = plStaticCast<const plVisualScriptPin&>(connection.GetSourcePin());
+  out_look.m_SourceColor = GetPinColor(sourcePin);
   out_look.m_TargetColor = GetPinColor(plStaticCast<const plVisualScriptPin&>(connection.GetTargetPin()));
+
+  // Live flow: balls run along an execution wire the script just took, and along the data wires into a node that just
+  // ran. The runtime knows no reroutes, so a wire to or from one stands for the step between the nodes behind it.
+  const plScriptTools* pTools = plScriptTools::GetSingleton();
+  if (pTools == nullptr || pTools->IsStopped() || m_sWatchedAsset.IsEmpty())
+    return;
+
+  const plVisualScriptNodeManager* pManager = GetScriptManager();
+  auto skipReroutes = [pManager](const plDocumentObject* pNode, bool bForward)
+  {
+    for (plUInt32 i = 0; i < 64 && pNode != nullptr && pManager->IsReroute(pNode); ++i)
+    {
+      auto pins = bForward ? pManager->GetOutputPins(pNode) : pManager->GetInputPins(pNode);
+      if (pins.IsEmpty())
+        break;
+
+      auto connections = pManager->GetConnections(*pins[0]);
+      if (connections.IsEmpty())
+        break;
+
+      pNode = bForward ? connections[0]->GetTargetPin().GetParent() : connections[0]->GetSourcePin().GetParent();
+    }
+    return pNode;
+  };
+
+  const plDocumentObject* pFrom = skipReroutes(connection.GetSourcePin().GetParent(), false);
+  const plDocumentObject* pTo = skipReroutes(connection.GetTargetPin().GetParent(), true);
+  if (pFrom == nullptr || pTo == nullptr)
+    return;
+
+  bool bFlowing = false;
+  if (sourcePin.IsExecutionPin())
+  {
+    // The runtime runs the pure data nodes that feed a node right before it, so the step after A lands on B or on one
+    // of the data nodes upstream of B.
+    auto isPure = [pManager](const plDocumentObject* pNode)
+    {
+      for (const auto& pPin : pManager->GetInputPins(pNode))
+      {
+        if (plStaticCast<const plVisualScriptPin&>(*pPin).IsExecutionPin())
+          return false;
+      }
+      for (const auto& pPin : pManager->GetOutputPins(pNode))
+      {
+        if (plStaticCast<const plVisualScriptPin&>(*pPin).IsExecutionPin())
+          return false;
+      }
+      return true;
+    };
+
+    plHybridArray<const plDocumentObject*, 16> candidates;
+    candidates.PushBack(pTo);
+    for (plUInt32 i = 0; i < candidates.GetCount() && !bFlowing && candidates.GetCount() < 64; ++i)
+    {
+      bFlowing = pTools->IsStepFlowing(m_sWatchedAsset, pFrom->GetGuid(), candidates[i]->GetGuid());
+
+      for (const auto& pPin : pManager->GetInputPins(candidates[i]))
+      {
+        if (plStaticCast<const plVisualScriptPin&>(*pPin).IsExecutionPin())
+          continue;
+
+        for (const plVisualGraphConnection* pInput : pManager->GetConnections(*pPin))
+        {
+          const plDocumentObject* pSource = skipReroutes(pInput->GetSourcePin().GetParent(), false);
+          if (pSource != nullptr && isPure(pSource) && !candidates.Contains(pSource))
+            candidates.PushBack(pSource);
+        }
+      }
+    }
+  }
+  else
+  {
+    bFlowing = pTools->GetNodeFlowRate(m_sWatchedAsset, pTo->GetGuid()) > 0.0f;
+  }
+  out_look.m_bActive = bFlowing;
+  out_look.m_bFlowBalls = bFlowing;
 }
 
 bool plVisualScriptGraphController::IsNodeShown(const plDocumentObject* pNode) const
@@ -1504,6 +1633,21 @@ void plVisualScriptGraphController::GetBreadcrumbs(plDynamicArray<plString>& out
 
   for (const plVisualScriptBreadcrumbEntry& entry : path)
     out_crumbs.PushBack(entry.m_sDisplayName);
+
+  // While the game runs: what the whole graph costs per frame.
+  const plScriptTools* pTools = plScriptTools::GetSingleton();
+  if (pTools != nullptr && !out_crumbs.IsEmpty() && !m_sWatchedAsset.IsEmpty())
+  {
+    const plTime cost = pTools->GetGraphFrameTime(m_sWatchedAsset);
+    if (cost.IsPositive())
+    {
+      plStringBuilder sCrumb = out_crumbs.PeekBack();
+      sCrumb.Append(" \xC2\xB7 ");
+      FormatScriptTime(cost, sCrumb);
+      sCrumb.Append(" per frame");
+      out_crumbs.PeekBack() = sCrumb;
+    }
+  }
 }
 
 void plVisualScriptGraphController::OnBreadcrumbClicked(plUInt32 uiIndex)

@@ -4,6 +4,7 @@
 #include <Foundation/Configuration/CVar.h>
 #include <Foundation/IO/StringDeduplicationContext.h>
 #include <Core/Scripting/ScriptDebugger.h>
+#include <Core/Scripting/ScriptFlow.h>
 #include <Foundation/Types/ScopeExit.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptDebugBackend.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptInstance.h>
@@ -534,12 +535,58 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
   PL_SCOPE_EXIT(plVisualScriptDebugBackend::PopContext());
 #endif
 
+#if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+  // the editor's live flow: the last editor node that ran, so a step skips the nodes the compiler added in between
+  const plVisualScriptGraphDescription* pFlowDesc = nullptr;
+  plUuid lastFlowNode;
+
+  // Initialize starts after the entry node (the event), so a fresh call counts the entry here and steps from it.
+  if (plScriptFlow::IsWatching() && m_CallStack.IsEmpty() && m_pCurrentDesc == m_pDesc.Borrow())
+  {
+    const auto* pEntry = m_pCurrentDesc->GetNode(0);
+    const plVisualScriptGraphDescription::DebugInfo& debugInfo = m_pCurrentDesc->GetDebugInfo();
+    const plUuid entry = m_pCurrentDesc->GetNodeGuid(0);
+    if (pEntry != nullptr && entry.IsValid() && m_uiCurrentNode == pEntry->GetExecutionIndex(0) && plScriptFlow::IsWatched(debugInfo.m_uiAssetHash))
+    {
+      plScriptFlow::RecordNode(debugInfo.m_uiAssetHash, entry);
+      pFlowDesc = m_pCurrentDesc;
+      lastFlowNode = entry;
+    }
+  }
+#endif
+
   auto pNode = m_pCurrentDesc->GetNode(m_uiCurrentNode);
   while (pNode != nullptr)
   {
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
     if (plScriptDebugger::IsAttached())
       plVisualScriptDebugBackend::GetSingleton()->OnNode(*this);
+
+    // the node is timed (with everything it calls) when its graph is watched
+    plUuid flowNode;
+    plUInt64 uiFlowAsset = 0;
+    plTime flowStart;
+    if (plScriptFlow::IsWatching())
+    {
+      const plVisualScriptGraphDescription::DebugInfo& debugInfo = m_pCurrentDesc->GetDebugInfo();
+      if (m_pCurrentDesc != pFlowDesc)
+      {
+        pFlowDesc = m_pCurrentDesc;
+        lastFlowNode = plUuid();
+      }
+
+      const plUuid node = m_pCurrentDesc->GetNodeGuid(m_uiCurrentNode);
+      if (node.IsValid() && plScriptFlow::IsWatched(debugInfo.m_uiAssetHash))
+      {
+        if (lastFlowNode.IsValid())
+          plScriptFlow::RecordStep(debugInfo.m_uiAssetHash, lastFlowNode, node);
+        lastFlowNode = node;
+
+        flowNode = node;
+        uiFlowAsset = debugInfo.m_uiAssetHash;
+        flowStart = plTime::Now();
+      }
+    }
 #endif
 
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
@@ -553,6 +600,9 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
     ExecResult result = pNode->m_Function(*this, *pNode);
 
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+    if (flowNode.IsValid())
+      plScriptFlow::RecordNode(uiFlowAsset, flowNode, plTime::Now() - flowStart);
+
     ++uiCounter;
     if (uiCounter >= plUInt32(cvar_MaxNodeExecutions))
     {

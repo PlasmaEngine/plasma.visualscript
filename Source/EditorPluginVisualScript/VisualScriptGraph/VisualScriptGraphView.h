@@ -1,6 +1,7 @@
 #pragma once
 
 #include <EditorPluginVisualScript/EditorPluginVisualScriptDLL.h>
+#include <EditorUi/Runtime.h>
 #include <Foundation/Communication/Event.h>
 #include <Foundation/Math/Rect.h>
 #include <Foundation/Types/Uuid.h>
@@ -186,6 +187,12 @@ private:
   plString GetAssetGuid() const;
 
   plEventSubscriptionID m_ScriptToolsSubscription = 0;
+
+  /// The graph's live flow is recorded while this view shows it; the timer redraws once flowing wires have faded.
+  plString m_sWatchedAsset;
+  plEditorUiTimerGroup m_FlowTimers;
+  plUInt32 m_uiFlowFadeTimer = 0;
+
   void GetSelectedNodesInScope(plDynamicArray<const plDocumentObject*>& out_nodes) const;
   plRectFloat GetBounds(plArrayPtr<const plDocumentObject* const> nodes) const;
   plColorGammaUB GetPinColor(const plVisualScriptPin& pin) const;

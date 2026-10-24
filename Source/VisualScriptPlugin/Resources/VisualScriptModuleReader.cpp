@@ -1,6 +1,7 @@
 #include <VisualScriptPlugin/VisualScriptPluginPCH.h>
 
 #include <Core/ResourceManager/ResourceManager.h>
+#include <Foundation/Algorithm/HashingUtils.h>
 #include <Foundation/IO/ChunkStream.h>
 #include <Foundation/IO/StringDeduplicationContext.h>
 #include <VisualScriptPlugin/Resources/VisualScriptLibraryResource.h>
@@ -145,6 +146,7 @@ plResult plVisualScriptModuleReader::Read(plStreamReader& inout_stream, plVisual
         {
           auto& debugInfo = out_module.m_Functions[i].m_pDesc->GetWritableDebugInfo();
           debugInfo.m_sAsset = sAsset;
+          debugInfo.m_uiAssetHash = plHashingUtils::StringHash(sAsset);
           debugInfo.m_NodeGuids = std::move(nodeGuids);
         }
       }
