@@ -5,8 +5,8 @@ PluginInfo
 {
 	string %DisplayName{"VisualScript"}
 	string %Category{"Scripting"}
-	string %MinEngineVersion{"0.11.0"}
-	string %MaxEngineVersion{"0.11.0"}
+	string %MinEngineVersion{"0.11.2"}
+	string %MaxEngineVersion{"0.11.2"}
 	string %Icon{"VisualScriptIcon.png"}
     string %Banner{"VisualScriptBanner.png"}
 	string %Description{"Adds support for scripting via node based visual scripting."}
