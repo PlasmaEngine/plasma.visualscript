@@ -75,9 +75,19 @@ plResourceLoadDesc plVisualScriptClassResource::UpdateContent(plStreamReader* pS
   AssetHash.Read(*pStream).IgnoreResult();
 
   const plRTTI* pBaseClassType = nullptr;
-  if (plVisualScriptModuleReader::Read(*pStream, m_Module, true, pBaseClassType).Failed())
+  auto onFunctionLoaded = [this](plStringView sScriptClassName, plVisualScriptModuleData::Function& function)
+  {
+    if (function.m_Type == plVisualScriptNodeDescription::Type::EntryCall_Coroutine ||
+        function.m_Type == plVisualScriptNodeDescription::Type::MessageHandler_Coroutine)
+    {
+      plUniquePtr<plVisualScriptCoroutineAllocator> pAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, function.m_pDesc);
+      function.m_pCoroutineType = CreateScriptCoroutineType(sScriptClassName, function.m_sName, std::move(pAllocator));
+    }
+  };
+  if (plVisualScriptModuleReader::Read(*pStream, m_Module, true, pBaseClassType, onFunctionLoaded).Failed())
   {
     m_Module.Clear();
+    DeleteAllScriptCoroutineTypes();
     return ld;
   }
 
@@ -85,6 +95,7 @@ plResourceLoadDesc plVisualScriptClassResource::UpdateContent(plStreamReader* pS
   if (plVisualScriptModuleReader::ResolveCallSites(m_Module).Failed())
   {
     m_Module.Clear();
+    DeleteAllScriptCoroutineTypes();
     return ld;
   }
 
@@ -106,9 +117,7 @@ plResourceLoadDesc plVisualScriptClassResource::UpdateContent(plStreamReader* pS
     }
     else if (functionType == plVisualScriptNodeDescription::Type::EntryCall_Coroutine)
     {
-      plUniquePtr<plVisualScriptCoroutineAllocator> pCoroutineAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, pDesc);
-      auto pCoroutineType = CreateScriptCoroutineType(sScriptClassName, sFunctionName, std::move(pCoroutineAllocator));
-      plUniquePtr<plScriptCoroutineFunctionProperty> pFunctionProperty = PL_SCRIPT_NEW(plScriptCoroutineFunctionProperty, sFunctionName, pCoroutineType, coroutineCreationMode);
+      plUniquePtr<plScriptCoroutineFunctionProperty> pFunctionProperty = PL_SCRIPT_NEW(plScriptCoroutineFunctionProperty, sFunctionName, function.m_pCoroutineType, coroutineCreationMode);
       functions.PushBack(std::move(pFunctionProperty));
     }
     else if (functionType == plVisualScriptNodeDescription::Type::MessageHandler)
@@ -120,9 +129,7 @@ plResourceLoadDesc plVisualScriptClassResource::UpdateContent(plStreamReader* pS
     else if (functionType == plVisualScriptNodeDescription::Type::MessageHandler_Coroutine)
     {
       auto desc = pDesc->GetMessageDesc();
-      plUniquePtr<plVisualScriptCoroutineAllocator> pCoroutineAllocator = PL_SCRIPT_NEW(plVisualScriptCoroutineAllocator, pDesc);
-      auto pCoroutineType = CreateScriptCoroutineType(sScriptClassName, sFunctionName, std::move(pCoroutineAllocator));
-      plUniquePtr<plScriptCoroutineMessageHandler> pMessageHandler = PL_SCRIPT_NEW(plScriptCoroutineMessageHandler, sFunctionName, desc, pCoroutineType, coroutineCreationMode);
+      plUniquePtr<plScriptCoroutineMessageHandler> pMessageHandler = PL_SCRIPT_NEW(plScriptCoroutineMessageHandler, sFunctionName, desc, function.m_pCoroutineType, coroutineCreationMode);
       messageHandlers.PushBack(std::move(pMessageHandler));
     }
     else if (plVisualScriptNodeDescription::Type::IsFunctionEntry(functionType))
@@ -133,6 +140,7 @@ plResourceLoadDesc plVisualScriptClassResource::UpdateContent(plStreamReader* pS
     {
       plLog::Error("Invalid event handler type '{}' for event handler '{}'", plVisualScriptNodeDescription::Type::GetName(functionType), sFunctionName);
       m_Module.Clear();
+      DeleteAllScriptCoroutineTypes();
       return ld;
     }
   }

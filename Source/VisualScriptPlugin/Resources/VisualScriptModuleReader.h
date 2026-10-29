@@ -15,6 +15,7 @@ struct PL_VISUALSCRIPTPLUGIN_DLL plVisualScriptModuleData
     plEnum<plVisualScriptNodeDescription::Type> m_Type;
     plEnum<plScriptCoroutineCreationMode> m_CoroutineCreationMode;
     plSharedPtr<plVisualScriptGraphDescription> m_pDesc;
+    plSharedPtr<plScriptCoroutineRTTI> m_pCoroutineType;
   };
 
   plString m_sBaseClassName;
@@ -43,7 +44,10 @@ struct PL_VISUALSCRIPTPLUGIN_DLL plVisualScriptModuleReader
 {
   /// \brief Reads the chunk stream written by the visual script compiler. The stream must already be positioned behind the asset file header.
   /// \a bRequireBaseClass fails the read when the header names no valid base class (class modules), libraries pass false.
-  static plResult Read(plStreamReader& inout_stream, plVisualScriptModuleData& out_module, bool bRequireBaseClass, const plRTTI*& out_pBaseClassType);
+  using FunctionLoadedCallback = plDelegate<void(plStringView, plVisualScriptModuleData::Function&)>;
+
+  static plResult Read(plStreamReader& inout_stream, plVisualScriptModuleData& out_module, bool bRequireBaseClass, const plRTTI*& out_pBaseClassType,
+    FunctionLoadedCallback onFunctionLoaded = {});
 
   /// \brief Patches every Builtin_Call / Builtin_CallLibrary node of the module. Library resources are loaded blocking; the module keeps them alive.
   static plResult ResolveCallSites(plVisualScriptModuleData& inout_module);

@@ -28,7 +28,8 @@ const plSharedPtr<const plVisualScriptGraphDescription>* plVisualScriptModuleDat
 }
 
 // static
-plResult plVisualScriptModuleReader::Read(plStreamReader& inout_stream, plVisualScriptModuleData& out_module, bool bRequireBaseClass, const plRTTI*& out_pBaseClassType)
+plResult plVisualScriptModuleReader::Read(plStreamReader& inout_stream, plVisualScriptModuleData& out_module, bool bRequireBaseClass, const plRTTI*& out_pBaseClassType,
+  FunctionLoadedCallback onFunctionLoaded)
 {
   out_module.Clear();
   out_pBaseClassType = nullptr;
@@ -120,6 +121,11 @@ plResult plVisualScriptModuleReader::Read(plStreamReader& inout_stream, plVisual
         }
 
         function.m_pDesc->GetWritableDebugInfo().m_sFunction = function.m_sName;
+
+        // The compiler writes nested coroutine bodies first. Register their types before
+        // deserializing the enclosing graph's StartCoroutine nodes.
+        if (onFunctionLoaded.IsValid())
+          onFunctionLoaded(out_module.m_sScriptClassName, function);
 
         if (plVisualScriptNodeDescription::Type::IsFunctionEntry(function.m_Type))
         {
