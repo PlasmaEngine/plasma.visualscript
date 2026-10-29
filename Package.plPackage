@@ -8,14 +8,14 @@
 PackageInfo
 {
 	string %Id{"plasma.visualscript"}
-	string %Version{"1.1.0"}
+	string %Version{"1.3.2"}
 	string %Publisher{"PlasmaTechnology"}
 	string %License{"MIT"}
 	string %Homepage{"https://plasmagameengine.com"}
 
-	string %MinEngineVersion{"0.8.0"}
-	string %MaxEngineVersion{"0.8.0"}
-	string %AbiTag{"win64-msvc19-0.8.0-dev"}
+	string %MinEngineVersion{"0.11.2"}
+	string %MaxEngineVersion{"0.11.2"}
+	string %AbiTag{"win64-msvc19-0.11.2-abi6-dev"}
 
 	string %DisplayName{"VisualScript"}
 	string %Category{"Scripting"}
@@ -33,8 +33,9 @@ PackageInfo
 	Requires { string %Id{"plasma.assets"} string %Range{"^1.0"} }
 
 	Component { string %Name{"manifest"} string %Platform{"any"} }
-	Component { string %Name{"runtime-win64"} string %Platform{"win64"} }
-	Component { string %Name{"editor-win64"} string %Platform{"win64"} }
+	Component { string %Name{"runtime-win64"} string %Platform{"win64"} }	Component { string %Name{"editor-win64"} string %Platform{"win64"} }
 	Component { string %Name{"icon"} string %Platform{"any"} }
 	Component { string %Name{"banner"} string %Platform{"any"} }
+	// The editor plugin's icons, found under their ids (":/AssetIcons/VisualScript.svg") in EditorIcons.
+	Component { string %Name{"tool"} string %Platform{"any"} string %Path{"EditorIcons"} }
 }

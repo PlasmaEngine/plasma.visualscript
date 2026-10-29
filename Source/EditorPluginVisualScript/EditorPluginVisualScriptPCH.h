@@ -8,16 +8,8 @@
 
 #include <EditorPluginVisualScript/EditorPluginVisualScriptDLL.h>
 
-#include <EditorFramework/EditorApp/EditorApp.moc.h>
+#include <EditorFramework/EditorApp/EditorApp.h>
 #include <Foundation/Reflection/Reflection.h>
 #include <Foundation/Strings/StringBuilder.h>
 #include <Foundation/Strings/TranslationLookup.h>
 #include <GuiFoundation/Action/ActionManager.h>
-
-#include <QActionGroup>
-#include <QComboBox>
-#include <QLabel>
-#include <QLayout>
-#include <QMenu>
-#include <QSyntaxHighlighter>
-#include <QTextEdit>

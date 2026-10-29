@@ -21,6 +21,8 @@ struct PL_VISUALSCRIPTPLUGIN_DLL plVisualScriptNodeDescription
       EntryCall_Coroutine,
       MessageHandler,
       MessageHandler_Coroutine,
+      FunctionEntry,           // Entry of a graph-internal function, invoked through Builtin_Call / Builtin_CallLibrary
+      FunctionEntry_Coroutine, // Same, but the function body contains coroutine nodes
       ReflectedFunction,
       GetReflectedProperty,
       SetReflectedProperty,
@@ -95,14 +97,30 @@ struct PL_VISUALSCRIPTPLUGIN_DLL plVisualScriptNodeDescription
       Builtin_WaitForAny,
       Builtin_Yield,
 
+      Builtin_Call,        // Calls a function of the same module, pushes a call frame
+      Builtin_CallLibrary, // Calls a function of a visual script library resource, pushes a call frame
+      Builtin_Return,      // Pops the current call frame and writes the function outputs
+
+      Builtin_Reroute,         // Editor only
+      Builtin_PortalIn,        // Editor only
+      Builtin_PortalOut,       // Editor only
+      Builtin_SubGraph,        // Editor only
+      Builtin_SubGraphInputs,  // Editor only
+      Builtin_SubGraphOutputs, // Editor only
+
       LastBuiltin,
 
       Count,
       Default = Invalid
     };
 
-    PL_ALWAYS_INLINE static bool IsEntry(Enum type) { return type >= EntryCall && type <= MessageHandler_Coroutine; }
+    PL_ALWAYS_INLINE static bool IsEntry(Enum type) { return type >= EntryCall && type <= FunctionEntry_Coroutine; }
+    PL_ALWAYS_INLINE static bool IsFunctionEntry(Enum type) { return type == FunctionEntry || type == FunctionEntry_Coroutine; }
+    PL_ALWAYS_INLINE static bool IsCall(Enum type) { return type == Builtin_Call || type == Builtin_CallLibrary; }
     PL_ALWAYS_INLINE static bool IsLoop(Enum type) { return type >= Builtin_WhileLoop && type <= Builtin_ReverseForEachLoop; }
+
+    /// \brief Editor-only nodes that only forward connections (reroutes, portals, sub-graph boundaries). The compiler resolves through them and never creates AST nodes for them.
+    PL_ALWAYS_INLINE static bool IsTransparent(Enum type) { return type >= Builtin_Reroute && type <= Builtin_SubGraphOutputs; }
 
     PL_ALWAYS_INLINE static bool MakesOuterCoroutine(Enum type) { return type == InplaceCoroutine || (type >= Builtin_WaitForAll && type <= Builtin_Yield); }
 
@@ -163,6 +181,7 @@ public:
       {
         Completed = 0,
         ContinueLater = -1,
+        FrameChanged = -2, ///< A call frame was pushed or popped, the context already points at the next node
 
         Error = -100,
       };
@@ -171,6 +190,7 @@ public:
     static PL_ALWAYS_INLINE ExecResult Completed() { return {0}; }
     static PL_ALWAYS_INLINE ExecResult RunNext(int iExecSlot) { return {iExecSlot}; }
     static PL_ALWAYS_INLINE ExecResult ContinueLater(plTime maxDelay) { return {State::ContinueLater, maxDelay}; }
+    static PL_ALWAYS_INLINE ExecResult FrameChanged() { return {State::FrameChanged}; }
     static PL_ALWAYS_INLINE ExecResult Error() { return {State::Error}; }
 
     int m_NextExecAndState = 0;
@@ -220,17 +240,44 @@ public:
     const T& GetUserData() const;
 
     template <typename T>
+    T& GetWritableUserData();
+
+    template <typename T>
     T& InitUserData(plUInt8*& inout_pAdditionalData, plUInt32 uiByteSize = sizeof(T), plUInt32 uiAlignment = GetUserDataAlignment<T>());
   };
 
   const Node* GetNode(plUInt32 uiIndex) const;
+  plUInt32 GetNodeCount() const { return m_Nodes.GetCount(); }
 
   bool IsCoroutine() const;
+  bool IsFunction() const;
   plScriptMessageDesc GetMessageDesc() const;
+
+  /// \brief Number of arguments the entry node accepts (its output data pins).
+  plUInt32 GetNumEntryArguments() const;
+
+  /// \brief Calls \a func for every Builtin_Call / Builtin_CallLibrary node so the owning resource can patch the callee pointers into the node user data.
+  plResult PatchCallSites(plDelegate<plResult(Node& ref_node)> func);
 
   const plSharedPtr<const plVisualScriptDataDescription>& GetLocalDataDesc() const;
 
+  /// Where the graph came from, for runtime errors and the debugger. Empty when the module has no debug table.
+  struct DebugInfo
+  {
+    plString m_sAsset;               ///< asset GUID of the graph document
+    plUInt64 m_uiAssetHash = 0;      ///< plHashingUtils::StringHash(m_sAsset), how the editor names a watched graph
+    plString m_sFunction;            ///< the function this graph implements
+    plDynamicArray<plUuid> m_NodeGuids; ///< the editor node of each runtime node; invalid for nodes the compiler added
+  };
+
+  const DebugInfo& GetDebugInfo() const { return m_DebugInfo; }
+  DebugInfo& GetWritableDebugInfo() { return m_DebugInfo; }
+
+  /// The editor node of a runtime node, or an invalid GUID.
+  plUuid GetNodeGuid(plUInt32 uiNodeIndex) const { return uiNodeIndex < m_DebugInfo.m_NodeGuids.GetCount() ? m_DebugInfo.m_NodeGuids[uiNodeIndex] : plUuid(); }
+
 private:
+  DebugInfo m_DebugInfo;
   plArrayPtr<const Node> m_Nodes;
   plBlob m_Storage;
 
@@ -276,17 +323,57 @@ public:
 
   plTime GetDeltaTimeSinceLastExecution();
 
+  /// \brief Pushes a call frame for \a pCalleeDesc. The inputs of \a callNode become the arguments of the callee's entry node.
+  /// \a pCalleeConstants is the constant data storage of the callee's module; nullptr keeps the current one (same module).
+  ExecResult PushFrame(const plVisualScriptGraphDescription* pCalleeDesc, plVisualScriptDataStorage* pCalleeConstants, const plVisualScriptGraphDescription::Node& callNode);
+
+  /// \brief Pops the current call frame. The inputs of \a pReturnNode (may be nullptr for an implicit return) are written to the outputs of the call node that pushed the frame.
+  /// With an empty call stack the values are kept as the return values of the whole execution instead.
+  ExecResult PopFrame(const plVisualScriptGraphDescription::Node* pReturnNode);
+
+  plUInt32 GetCallDepth() const { return m_CallStack.GetCount(); }
+
+  /// The graph and node that run right now.
+  const plVisualScriptGraphDescription* GetCurrentDesc() const { return m_pCurrentDesc; }
+  plUInt32 GetCurrentNodeIndex() const { return m_uiCurrentNode; }
+
+  /// Call frame uiFrame, 0 being the outermost: the calling graph and the index of its call node.
+  void GetCallFrame(plUInt32 uiFrame, const plVisualScriptGraphDescription*& out_pDesc, plUInt32& out_uiNodeIndex) const
+  {
+    out_pDesc = m_CallStack[uiFrame].m_pDesc;
+    out_uiNodeIndex = m_CallStack[uiFrame].m_uiCallNodeIndex;
+  }
+  plArrayPtr<const plVariant> GetReturnValues() const { return m_ReturnValues; }
+
 private:
+  struct CallFrame
+  {
+    const plVisualScriptGraphDescription* m_pDesc = nullptr;
+    plVisualScriptDataStorage* m_pLocalDataStorage = nullptr;
+    plVisualScriptDataStorage* m_pConstantDataStorage = nullptr;
+    plScriptCoroutine* m_pCurrentCoroutine = nullptr;
+    plUInt32 m_uiCallNodeIndex = 0;
+  };
+
+  void UnwindCallStack();
+  void StopCurrentCoroutine();
+
   plSharedPtr<const plVisualScriptGraphDescription> m_pDesc;
+  const plVisualScriptGraphDescription* m_pCurrentDesc = nullptr;
   plVisualScriptInstance* m_pInstance = nullptr;
+  plAllocator* m_pAllocator = nullptr;
   plUInt32 m_uiCurrentNode = 0;
   plUInt32 m_uiExecutionCounter = 0;
   plTime m_DeltaTimeSinceLastExecution;
+  bool m_bIsCoroutine = false;
 
   plVisualScriptDataStorage m_LocalDataStorage;
   plVisualScriptDataStorage* m_DataStorage[DataOffset::Source::Count] = {};
 
   plScriptCoroutine* m_pCurrentCoroutine = nullptr;
+
+  plHybridArray<CallFrame, 4> m_CallStack;
+  plHybridArray<plVariant, 2> m_ReturnValues;
 };
 
 struct plVisualScriptSendMessageMode

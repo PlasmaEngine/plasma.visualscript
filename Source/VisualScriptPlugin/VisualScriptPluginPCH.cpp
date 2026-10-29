@@ -10,6 +10,7 @@ PL_STATICLINK_LIBRARY(VisualScriptPlugin)
     return;
 
   PL_STATICLINK_REFERENCE(VisualScriptPlugin_Resources_VisualScriptClassResource);
+  PL_STATICLINK_REFERENCE(VisualScriptPlugin_Resources_VisualScriptLibraryResource);
   PL_STATICLINK_REFERENCE(VisualScriptPlugin_Runtime_VisualScript);
   PL_STATICLINK_REFERENCE(VisualScriptPlugin_Runtime_VisualScriptDataType);
 }

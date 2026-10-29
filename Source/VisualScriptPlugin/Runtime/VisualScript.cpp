@@ -3,6 +3,10 @@
 #include <Core/Scripting/ScriptWorldModule.h>
 #include <Foundation/Configuration/CVar.h>
 #include <Foundation/IO/StringDeduplicationContext.h>
+#include <Core/Scripting/ScriptDebugger.h>
+#include <Core/Scripting/ScriptFlow.h>
+#include <Foundation/Types/ScopeExit.h>
+#include <VisualScriptPlugin/Runtime/VisualScriptDebugBackend.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptInstance.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptNodeUserData.h>
 
@@ -16,6 +20,8 @@ namespace
     "EntryCall_Coroutine",
     "MessageHandler",
     "MessageHandler_Coroutine",
+    "FunctionEntry",
+    "FunctionEntry_Coroutine",
     "ReflectedFunction",
     "GetReflectedProperty",
     "SetReflectedProperty",
@@ -90,6 +96,17 @@ namespace
     "Builtin_WaitForAny",
     "Builtin_Yield",
 
+    "Builtin_Call",
+    "Builtin_CallLibrary",
+    "Builtin_Return",
+
+    "Builtin_Reroute",
+    "Builtin_PortalIn",
+    "Builtin_PortalOut",
+    "Builtin_SubGraph",
+    "Builtin_SubGraphInputs",
+    "Builtin_SubGraphOutputs",
+
     "", // LastBuiltin,
   };
   static_assert(PL_ARRAY_SIZE(s_NodeDescTypeNames) == (size_t)plVisualScriptNodeDescription::Type::Count);
@@ -157,7 +174,7 @@ plVisualScriptGraphDescription::plVisualScriptGraphDescription()
 
 plVisualScriptGraphDescription::~plVisualScriptGraphDescription() = default;
 
-static const plTypeVersion s_uiVisualScriptGraphDescriptionVersion = 7;
+static const plTypeVersion s_uiVisualScriptGraphDescriptionVersion = 8;
 
 // static
 plResult plVisualScriptGraphDescription::Serialize(plArrayPtr<const plVisualScriptNodeDescription> nodes, const plVisualScriptDataDescription& localDataDesc, plStreamWriter& inout_stream)
@@ -285,6 +302,28 @@ plResult plVisualScriptGraphDescription::Deserialize(plStreamReader& inout_strea
   return PL_SUCCESS;
 }
 
+plUInt32 plVisualScriptGraphDescription::GetNumEntryArguments() const
+{
+  auto pEntryNode = GetNode(0);
+  return pEntryNode != nullptr ? pEntryNode->m_NumOutputDataOffsets : 0;
+}
+
+plResult plVisualScriptGraphDescription::PatchCallSites(plDelegate<plResult(Node& ref_node)> func)
+{
+  // The nodes live in m_Storage which is owned by this description, so writing to them is legal here.
+  Node* pNodes = const_cast<Node*>(m_Nodes.GetPtr());
+  for (plUInt32 i = 0; i < m_Nodes.GetCount(); ++i)
+  {
+    Node& node = pNodes[i];
+    if (plVisualScriptNodeDescription::Type::IsCall(node.m_Type))
+    {
+      PL_SUCCEED_OR_RETURN(func(node));
+    }
+  }
+
+  return PL_SUCCESS;
+}
+
 plScriptMessageDesc plVisualScriptGraphDescription::GetMessageDesc() const
 {
   auto pEntryNode = GetNode(0);
@@ -305,9 +344,13 @@ plScriptMessageDesc plVisualScriptGraphDescription::GetMessageDesc() const
 //////////////////////////////////////////////////////////////////////////
 
 plCVarInt cvar_MaxNodeExecutions("VisualScript.MaxNodeExecutions", 100000, plCVarFlags::Default, "The maximum number of nodes executed within a script invocation");
+plCVarInt cvar_MaxCallDepth("VisualScript.MaxCallDepth", 128, plCVarFlags::Default, "The maximum depth of nested visual script function calls");
 
 plVisualScriptExecutionContext::plVisualScriptExecutionContext(const plSharedPtr<const plVisualScriptGraphDescription>& pDesc, plAllocator* pAllocator)
   : m_pDesc(pDesc)
+  , m_pCurrentDesc(pDesc.Borrow())
+  , m_pAllocator(pAllocator)
+  , m_bIsCoroutine(pDesc->IsCoroutine())
   , m_LocalDataStorage(pDesc->GetLocalDataDesc())
 {
   m_LocalDataStorage.AllocateStorage(pAllocator);
@@ -321,12 +364,16 @@ plVisualScriptExecutionContext::~plVisualScriptExecutionContext()
 
 void plVisualScriptExecutionContext::Initialize(plVisualScriptInstance& inout_instance, plArrayPtr<plVariant> arguments)
 {
+  PL_ASSERT_DEV(m_CallStack.IsEmpty(), "Context is still executing a function call");
+
   m_pInstance = &inout_instance;
+  m_pCurrentDesc = m_pDesc.Borrow();
+  m_ReturnValues.Clear();
 
   m_DataStorage[DataOffset::Source::Instance] = inout_instance.GetInstanceDataStorage();
   m_DataStorage[DataOffset::Source::Constant] = inout_instance.GetConstantDataStorage();
 
-  auto pNode = m_pDesc->GetNode(0);
+  auto pNode = m_pCurrentDesc->GetNode(0);
   PL_ASSERT_DEV(plVisualScriptNodeDescription::Type::IsEntry(pNode->m_Type), "Invalid entry node");
 
   for (plUInt32 i = 0; i < arguments.GetCount(); ++i)
@@ -337,15 +384,142 @@ void plVisualScriptExecutionContext::Initialize(plVisualScriptInstance& inout_in
   m_uiCurrentNode = pNode->GetExecutionIndex(0);
 }
 
-void plVisualScriptExecutionContext::Deinitialize()
+void plVisualScriptExecutionContext::StopCurrentCoroutine()
 {
   // 0x1 is a marker value to indicate that we are in a yield
   if (m_pCurrentCoroutine > reinterpret_cast<plScriptCoroutine*>(0x1))
   {
     auto pModule = m_pInstance->GetWorld()->GetOrCreateModule<plScriptWorldModule>();
     pModule->StopAndDeleteCoroutine(m_pCurrentCoroutine->GetHandle());
-    m_pCurrentCoroutine = nullptr;
   }
+  m_pCurrentCoroutine = nullptr;
+}
+
+void plVisualScriptExecutionContext::UnwindCallStack()
+{
+  while (m_CallStack.IsEmpty() == false)
+  {
+    StopCurrentCoroutine();
+
+    CallFrame frame = m_CallStack.PeekBack();
+    m_CallStack.PopBack();
+
+    plVisualScriptDataStorage* pCalleeLocals = m_DataStorage[DataOffset::Source::Local];
+    PL_DELETE(m_pAllocator, pCalleeLocals);
+
+    m_pCurrentDesc = frame.m_pDesc;
+    m_DataStorage[DataOffset::Source::Local] = frame.m_pLocalDataStorage;
+    m_DataStorage[DataOffset::Source::Constant] = frame.m_pConstantDataStorage;
+    m_pCurrentCoroutine = frame.m_pCurrentCoroutine;
+    m_uiCurrentNode = frame.m_uiCallNodeIndex;
+  }
+}
+
+void plVisualScriptExecutionContext::Deinitialize()
+{
+  if (m_pInstance == nullptr)
+    return;
+
+  UnwindCallStack();
+  StopCurrentCoroutine();
+}
+
+plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::PushFrame(const plVisualScriptGraphDescription* pCalleeDesc, plVisualScriptDataStorage* pCalleeConstants, const plVisualScriptGraphDescription::Node& callNode)
+{
+  if (m_CallStack.GetCount() >= plUInt32(cvar_MaxCallDepth))
+  {
+    plLog::Error("Maximum visual script call depth ({}) reached, execution will be aborted. Does the script contain an unbounded recursion?", cvar_MaxCallDepth);
+    return ExecResult::Error();
+  }
+
+  auto pEntryNode = pCalleeDesc->GetNode(0);
+  if (pEntryNode == nullptr || plVisualScriptNodeDescription::Type::IsFunctionEntry(pEntryNode->m_Type) == false)
+  {
+    plLog::Error("Called visual script function does not start with a function entry node");
+    return ExecResult::Error();
+  }
+
+  // Read the arguments while the caller's storages are still bound
+  plHybridArray<plVariant, 8> arguments;
+  for (plUInt32 i = 0; i < callNode.m_NumInputDataOffsets; ++i)
+  {
+    arguments.PushBack(GetDataAsVariant(callNode.GetInputDataOffset(i), nullptr));
+  }
+
+  plVisualScriptDataStorage* pCalleeLocals = PL_NEW(m_pAllocator, plVisualScriptDataStorage, pCalleeDesc->GetLocalDataDesc());
+  pCalleeLocals->AllocateStorage(m_pAllocator);
+
+  CallFrame& frame = m_CallStack.ExpandAndGetRef();
+  frame.m_pDesc = m_pCurrentDesc;
+  frame.m_pLocalDataStorage = m_DataStorage[DataOffset::Source::Local];
+  frame.m_pConstantDataStorage = m_DataStorage[DataOffset::Source::Constant];
+  frame.m_pCurrentCoroutine = m_pCurrentCoroutine;
+  frame.m_uiCallNodeIndex = m_uiCurrentNode;
+
+  m_pCurrentDesc = pCalleeDesc;
+  m_DataStorage[DataOffset::Source::Local] = pCalleeLocals;
+  if (pCalleeConstants != nullptr)
+  {
+    m_DataStorage[DataOffset::Source::Constant] = pCalleeConstants;
+  }
+  m_pCurrentCoroutine = nullptr;
+
+  for (plUInt32 i = 0; i < arguments.GetCount(); ++i)
+  {
+    SetDataFromVariant(pEntryNode->GetOutputDataOffset(i), arguments[i]);
+  }
+
+  m_uiCurrentNode = pEntryNode->GetExecutionIndex(0);
+
+  return ExecResult::FrameChanged();
+}
+
+plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::PopFrame(const plVisualScriptGraphDescription::Node* pReturnNode)
+{
+  // Read the return values while the callee's storages are still bound
+  plHybridArray<plVariant, 8> values;
+  if (pReturnNode != nullptr)
+  {
+    for (plUInt32 i = 0; i < pReturnNode->m_NumInputDataOffsets; ++i)
+    {
+      DataOffset dataOffset = pReturnNode->GetInputDataOffset(i);
+      values.PushBack(dataOffset.IsValid() ? GetDataAsVariant(dataOffset, nullptr) : plVariant());
+    }
+  }
+
+  if (m_CallStack.IsEmpty())
+  {
+    // Returning from the root function: keep the values for the caller of Execute
+    m_ReturnValues = values;
+    return ExecResult::Completed();
+  }
+
+  CallFrame frame = m_CallStack.PeekBack();
+  m_CallStack.PopBack();
+
+  plVisualScriptDataStorage* pCalleeLocals = m_DataStorage[DataOffset::Source::Local];
+  PL_DELETE(m_pAllocator, pCalleeLocals);
+
+  m_pCurrentDesc = frame.m_pDesc;
+  m_DataStorage[DataOffset::Source::Local] = frame.m_pLocalDataStorage;
+  m_DataStorage[DataOffset::Source::Constant] = frame.m_pConstantDataStorage;
+  m_pCurrentCoroutine = frame.m_pCurrentCoroutine;
+
+  auto pCallNode = m_pCurrentDesc->GetNode(frame.m_uiCallNodeIndex);
+  PL_ASSERT_DEBUG(pCallNode != nullptr && plVisualScriptNodeDescription::Type::IsCall(pCallNode->m_Type), "Call frame does not point at a call node");
+
+  const plUInt32 uiNumOutputs = plMath::Min<plUInt32>(pCallNode->m_NumOutputDataOffsets, values.GetCount());
+  for (plUInt32 i = 0; i < uiNumOutputs; ++i)
+  {
+    if (values[i].IsValid())
+    {
+      SetDataFromVariant(pCallNode->GetOutputDataOffset(i), values[i]);
+    }
+  }
+
+  m_uiCurrentNode = pCallNode->GetExecutionIndex(0);
+
+  return ExecResult::FrameChanged();
 }
 
 plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execute(plTime deltaTimeSinceLastExecution)
@@ -356,11 +530,65 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
 
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
   plUInt32 uiCounter = 0;
+
+  plVisualScriptDebugBackend::PushContext(this);
+  PL_SCOPE_EXIT(plVisualScriptDebugBackend::PopContext());
 #endif
 
-  auto pNode = m_pDesc->GetNode(m_uiCurrentNode);
+#if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+  // the editor's live flow: the last editor node that ran, so a step skips the nodes the compiler added in between
+  const plVisualScriptGraphDescription* pFlowDesc = nullptr;
+  plUuid lastFlowNode;
+
+  // Initialize starts after the entry node (the event), so a fresh call counts the entry here and steps from it.
+  if (plScriptFlow::IsWatching() && m_CallStack.IsEmpty() && m_pCurrentDesc == m_pDesc.Borrow())
+  {
+    const auto* pEntry = m_pCurrentDesc->GetNode(0);
+    const plVisualScriptGraphDescription::DebugInfo& debugInfo = m_pCurrentDesc->GetDebugInfo();
+    const plUuid entry = m_pCurrentDesc->GetNodeGuid(0);
+    if (pEntry != nullptr && entry.IsValid() && m_uiCurrentNode == pEntry->GetExecutionIndex(0) && plScriptFlow::IsWatched(debugInfo.m_uiAssetHash))
+    {
+      plScriptFlow::RecordNode(debugInfo.m_uiAssetHash, entry);
+      pFlowDesc = m_pCurrentDesc;
+      lastFlowNode = entry;
+    }
+  }
+#endif
+
+  auto pNode = m_pCurrentDesc->GetNode(m_uiCurrentNode);
   while (pNode != nullptr)
   {
+#if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+    if (plScriptDebugger::IsAttached())
+      plVisualScriptDebugBackend::GetSingleton()->OnNode(*this);
+
+    // the node is timed (with everything it calls) when its graph is watched
+    plUuid flowNode;
+    plUInt64 uiFlowAsset = 0;
+    plTime flowStart;
+    if (plScriptFlow::IsWatching())
+    {
+      const plVisualScriptGraphDescription::DebugInfo& debugInfo = m_pCurrentDesc->GetDebugInfo();
+      if (m_pCurrentDesc != pFlowDesc)
+      {
+        pFlowDesc = m_pCurrentDesc;
+        lastFlowNode = plUuid();
+      }
+
+      const plUuid node = m_pCurrentDesc->GetNodeGuid(m_uiCurrentNode);
+      if (node.IsValid() && plScriptFlow::IsWatched(debugInfo.m_uiAssetHash))
+      {
+        if (lastFlowNode.IsValid())
+          plScriptFlow::RecordStep(debugInfo.m_uiAssetHash, lastFlowNode, node);
+        lastFlowNode = node;
+
+        flowNode = node;
+        uiFlowAsset = debugInfo.m_uiAssetHash;
+        flowStart = plTime::Now();
+      }
+    }
+#endif
+
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
     if (pNode->m_Function == nullptr)
     {
@@ -370,12 +598,11 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
 #endif
 
     ExecResult result = pNode->m_Function(*this, *pNode);
-    if (result.m_NextExecAndState < ExecResult::State::Completed)
-    {
-      return result;
-    }
 
 #if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+    if (flowNode.IsValid())
+      plScriptFlow::RecordNode(uiFlowAsset, flowNode, plTime::Now() - flowStart);
+
     ++uiCounter;
     if (uiCounter >= plUInt32(cvar_MaxNodeExecutions))
     {
@@ -384,10 +611,34 @@ plVisualScriptExecutionContext::ExecResult plVisualScriptExecutionContext::Execu
     }
 #endif
 
+    if (result.m_NextExecAndState == ExecResult::State::FrameChanged)
+    {
+      // PushFrame / PopFrame already selected the next node and description
+      pNode = m_pCurrentDesc->GetNode(m_uiCurrentNode);
+      continue;
+    }
+
+    if (result.m_NextExecAndState < ExecResult::State::Completed)
+    {
+#if PL_ENABLED(PL_COMPILE_FOR_DEVELOPMENT)
+      if (result.m_NextExecAndState == ExecResult::State::Error)
+        plVisualScriptDebugBackend::OnError(*this);
+#endif
+      return result;
+    }
+
     m_uiCurrentNode = pNode->GetExecutionIndex(result.m_NextExecAndState);
     m_pCurrentCoroutine = nullptr;
 
-    pNode = m_pDesc->GetNode(m_uiCurrentNode);
+    pNode = m_pCurrentDesc->GetNode(m_uiCurrentNode);
+
+    if (pNode == nullptr && m_CallStack.IsEmpty() == false)
+    {
+      // The compiler always emits a return node at the end of a function; never leak a frame though.
+      PL_ASSERT_DEBUG(false, "Visual script function ended without a return node");
+      PopFrame(nullptr);
+      pNode = m_pCurrentDesc->GetNode(m_uiCurrentNode);
+    }
   }
 
   return ExecResult::RunNext(0);

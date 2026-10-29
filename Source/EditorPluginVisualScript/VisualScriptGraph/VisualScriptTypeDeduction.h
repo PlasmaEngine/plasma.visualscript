@@ -18,6 +18,12 @@ public:
   static plVisualScriptDataType::Enum DeductFromPropertyProperty(const plDocumentObject* pObject, const plVisualScriptPin* pDisconnectedPin);
   static plVisualScriptDataType::Enum DeductDummy(const plDocumentObject* pObject, const plVisualScriptPin* pDisconnectedPin);
 
+  /// \brief A data reroute takes the type of whatever is connected: the source of its input first, otherwise the target of its output.
+  static plVisualScriptDataType::Enum DeductFromRerouteConnections(const plDocumentObject* pObject, const plVisualScriptPin* pDisconnectedPin);
+
+  /// \brief A data 'Portal Out' takes the type of the 'Portal In' with the same name.
+  static plVisualScriptDataType::Enum DeductFromPortalIn(const plDocumentObject* pObject, const plVisualScriptPin* pDisconnectedPin);
+
   static const plRTTI* GetReflectedType(const plDocumentObject* pObject);
   static const plAbstractProperty* GetReflectedProperty(const plDocumentObject* pObject);
 

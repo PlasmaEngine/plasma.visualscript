@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Core/Scripting/ScriptClassResource.h>
+#include <VisualScriptPlugin/Resources/VisualScriptModuleReader.h>
 #include <VisualScriptPlugin/Runtime/VisualScriptData.h>
 
 class PL_VISUALSCRIPTPLUGIN_DLL plVisualScriptClassResource : public plScriptClassResource
@@ -12,6 +13,9 @@ public:
   plVisualScriptClassResource();
   ~plVisualScriptClassResource();
 
+  /// \brief Graph-internal functions of this class by name.
+  const plSharedPtr<const plVisualScriptGraphDescription>* GetFunctionDesc(plTempHashedString sName) const { return m_Module.GetFunctionDesc(sName); }
+
 private:
   virtual plResourceLoadDesc UnloadData(Unload WhatToUnload) override;
   virtual plResourceLoadDesc UpdateContent(plStreamReader* pStream) override;
@@ -19,7 +23,6 @@ private:
 
   virtual plUniquePtr<plScriptInstance> Instantiate(plReflectedClass& inout_owner, plWorld* pWorld) const override;
 
-  plSharedPtr<plVisualScriptDataStorage> m_pConstantDataStorage;
-  plSharedPtr<const plVisualScriptDataDescription> m_pInstanceDataDesc;
-  plSharedPtr<plVisualScriptInstanceDataMapping> m_pInstanceDataMapping;
+  /// Owns every graph description, the constant/instance data and the referenced libraries. Function properties and message handlers share the descriptions.
+  plVisualScriptModuleData m_Module;
 };

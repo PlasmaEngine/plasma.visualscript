@@ -11,6 +11,8 @@ public:
 
   virtual void SetInstanceVariable(const plHashedString& sName, const plVariant& value) override;
   virtual plVariant GetInstanceVariable(const plHashedString& sName) override;
+  virtual void GetInstanceVariables(plArrayMap<plHashedString, plVariant>& out_variables) const override;
+  virtual plStringView GetScriptLanguage() const override { return "Visual Script"; }
 
   plVisualScriptDataStorage* GetConstantDataStorage() { return m_pConstantDataStorage.Borrow(); }
   plVisualScriptDataStorage* GetInstanceDataStorage() { return &m_InstanceDataStorage; }

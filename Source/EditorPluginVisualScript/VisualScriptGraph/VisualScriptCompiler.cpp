@@ -3,7 +3,8 @@
 #include <Core/World/World.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptCompiler.h>
 #include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptTypeDeduction.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptVariable.h>
+#include <EditorPluginVisualScript/VisualScriptLibraryAsset/VisualScriptLibraryMetaData.h>
 #include <Foundation/CodeUtils/Expression/ExpressionByteCode.h>
 #include <Foundation/CodeUtils/Expression/ExpressionCompiler.h>
 #include <Foundation/CodeUtils/Expression/ExpressionParser.h>
@@ -11,6 +12,33 @@
 #include <Foundation/IO/StringDeduplicationContext.h>
 #include <Foundation/SimdMath/SimdRandom.h>
 #include <Foundation/Utilities/DGMLWriter.h>
+
+namespace
+{
+  thread_local const plDocumentObject* s_pCurrentNode = nullptr;
+
+  /// Marks the node errors logged inside the scope are reported on.
+  class CurrentNodeScope
+  {
+  public:
+    explicit CurrentNodeScope(const plDocumentObject* pObject)
+      : m_pPrevious(s_pCurrentNode)
+    {
+      if (pObject != nullptr)
+        s_pCurrentNode = pObject;
+    }
+
+    ~CurrentNodeScope() { s_pCurrentNode = m_pPrevious; }
+
+  private:
+    const plDocumentObject* m_pPrevious;
+  };
+} // namespace
+
+const plDocumentObject* plVisualScriptCompiler::GetCurrentNode()
+{
+  return s_pCurrentNode;
+}
 
 namespace
 {
@@ -206,8 +234,9 @@ namespace
     pManager->GetOutputExecutionPins(pObject, pins);
 
     const plUInt32 uiCoroutineBodyIndex = 1;
-    auto connections = pManager->GetConnections(*pins[uiCoroutineBodyIndex]);
-    if (connections.IsEmpty() == false)
+    const plVisualScriptPin* pBodyPin = nullptr;
+    PL_SUCCEED_OR_RETURN(pManager->ResolveExecTarget(*pins[uiCoroutineBodyIndex], pBodyPin));
+    if (pBodyPin != nullptr)
     {
       plStringBuilder sFunctionName;
       MakeSubfunctionName(pObject, pEntryObject, sFunctionName);
@@ -217,8 +246,58 @@ namespace
 
       inout_astNode.m_sTargetTypeName.Assign(sFullName);
 
-      return pCompiler->AddFunction(sFunctionName, connections[0]->GetTargetPin().GetParent(), pObject);
+      return pCompiler->AddFunction(sFunctionName, pBodyPin->GetParent(), pObject);
     }
+
+    return PL_SUCCESS;
+  }
+
+  static plResult FillUserData_FunctionEntry(plVisualScriptCompiler::AstNode& inout_astNode, plVisualScriptCompiler* pCompiler, const plDocumentObject* pObject, const plDocumentObject* pEntryObject)
+  {
+    // the coroutine creation mode is read by AddFunction; the name only labels the debug dump
+    inout_astNode.m_Value = pObject->GetTypeAccessor().GetValue("Name");
+    return PL_SUCCESS;
+  }
+
+  static plResult FillUserData_Builtin_Call(plVisualScriptCompiler::AstNode& inout_astNode, plVisualScriptCompiler* pCompiler, const plDocumentObject* pObject, const plDocumentObject* pEntryObject)
+  {
+    auto pManager = static_cast<const plVisualScriptNodeManager*>(pObject->GetDocumentObjectManager());
+
+    plString sFunction = pObject->GetTypeAccessor().GetValue("Function").ConvertTo<plString>();
+    if (pManager->FindFunctionEntry(sFunction) == nullptr)
+    {
+      plLog::Error("Call node references the unknown function '{}'", sFunction);
+      return PL_FAILURE;
+    }
+
+    plVariantArray names;
+    names.PushBack(plString());
+    names.PushBack(sFunction);
+    inout_astNode.m_Value = names;
+    inout_astNode.m_bIsCoroutineCall = pCompiler->IsCoroutineFunction(sFunction);
+
+    return PL_SUCCESS;
+  }
+
+  static plResult FillUserData_Builtin_CallLibrary(plVisualScriptCompiler::AstNode& inout_astNode, plVisualScriptCompiler* pCompiler, const plDocumentObject* pObject, const plDocumentObject* pEntryObject)
+  {
+    auto pManager = static_cast<const plVisualScriptNodeManager*>(pObject->GetDocumentObjectManager());
+
+    plString sLibrary = pObject->GetTypeAccessor().GetValue("Library").ConvertTo<plString>();
+    plString sFunction = pObject->GetTypeAccessor().GetValue("Function").ConvertTo<plString>();
+
+    auto pMeta = pManager->GetLibraryMetaData(sLibrary);
+    if (pMeta == nullptr || pMeta->FindFunction(sFunction) == nullptr)
+    {
+      plLog::Error("Call Library Function node references the unknown function '{}' of library '{}'", sFunction, sLibrary);
+      return PL_FAILURE;
+    }
+
+    plVariantArray names;
+    names.PushBack(sLibrary);
+    names.PushBack(sFunction);
+    inout_astNode.m_Value = names;
+    inout_astNode.m_bIsCoroutineCall = pMeta->FindFunction(sFunction)->m_bCoroutine;
 
     return PL_SUCCESS;
   }
@@ -229,6 +308,8 @@ namespace
     &FillUserData_CoroutineMode,                     // EntryCall_Coroutine,
     &FillUserData_ReflectedPropertyOrFunction,       // MessageHandler,
     &FillUserData_ReflectedPropertyOrFunction,       // MessageHandler_Coroutine,
+    &FillUserData_FunctionEntry,                     // FunctionEntry,
+    &FillUserData_FunctionEntry,                     // FunctionEntry_Coroutine,
     &FillUserData_ReflectedPropertyOrFunction,       // ReflectedFunction,
     &FillUserData_DynamicReflectedProperty,          // GetReflectedProperty,
     &FillUserData_DynamicReflectedProperty,          // SetReflectedProperty,
@@ -302,6 +383,17 @@ namespace
     nullptr,                                         // Builtin_WaitForAll,
     nullptr,                                         // Builtin_WaitForAny,
     nullptr,                                         // Builtin_Yield,
+
+    &FillUserData_Builtin_Call,                      // Builtin_Call,
+    &FillUserData_Builtin_CallLibrary,               // Builtin_CallLibrary,
+    nullptr,                                         // Builtin_Return,
+
+    nullptr,                                         // Builtin_Reroute,
+    nullptr,                                         // Builtin_PortalIn,
+    nullptr,                                         // Builtin_PortalOut,
+    nullptr,                                         // Builtin_SubGraph,
+    nullptr,                                         // Builtin_SubGraphInputs,
+    nullptr,                                         // Builtin_SubGraphOutputs,
 
     nullptr,                                         // LastBuiltin,
   };
@@ -380,6 +472,20 @@ plResult plVisualScriptCompiler::CompiledModule::Serialize(plStreamWriter& inout
       chunk << function.m_CoroutineCreationMode;
 
       PL_SUCCEED_OR_RETURN(plVisualScriptGraphDescription::Serialize(function.m_NodeDescriptions, function.m_LocalDataDesc, chunk));
+    }
+
+    chunk.EndChunk();
+  }
+
+  // Optional: older readers skip it. Same function order as "FunctionGraphs".
+  {
+    chunk.BeginChunk("DebugTable", 1);
+    chunk << m_sDebugAsset;
+    chunk << m_Functions.GetCount();
+
+    for (plUInt32 i = m_Functions.GetCount(); i-- > 0;)
+    {
+      PL_SUCCEED_OR_RETURN(chunk.WriteArray(m_Functions[i].m_NodeGuids));
     }
 
     chunk.EndChunk();
@@ -474,12 +580,17 @@ plResult plVisualScriptCompiler::Compile(plStringView sDebugAstOutputPath)
 
     DumpAST(pEntryAstNode, sDebugAstOutputPath, function.m_sName, "_03_Replaced");
 
+    if (plVisualScriptNodeDescription::Type::IsFunctionEntry(pEntryAstNode->m_Type))
+    {
+      PL_SUCCEED_OR_RETURN(InsertImplicitReturn(pEntryAstNode, pEntryObject));
+    }
+
     PL_SUCCEED_OR_RETURN(CopyOutputsToInputs(pEntryAstNode));
     PL_SUCCEED_OR_RETURN(AssignLocalVariables(pEntryAstNode, function.m_LocalDataDesc));
 
     DumpAST(pEntryAstNode, sDebugAstOutputPath, function.m_sName, "_04_LocalVarsAssigned");
 
-    PL_SUCCEED_OR_RETURN(BuildNodeDescriptions(pEntryAstNode, function.m_NodeDescriptions));
+    PL_SUCCEED_OR_RETURN(BuildNodeDescriptions(pEntryAstNode, function.m_NodeDescriptions, function.m_NodeGuids));
 
     DumpGraph(function.m_NodeDescriptions, sDebugAstOutputPath, function.m_sName, "_Graph");
 
@@ -518,9 +629,12 @@ plVisualScriptCompiler::AstNode* plVisualScriptCompiler::CreateAstNodeFromObject
     pNodeDesc = plVisualScriptNodeRegistry::GetSingleton()->GetNodeDescForType(pObject->GetType());
   }
   PL_ASSERT_DEV(pNodeDesc != nullptr && pNodeDesc->m_Type != plVisualScriptNodeDescription::Type::GetScriptOwner, "Invalid node type");
+  PL_ASSERT_DEV(plVisualScriptNodeDescription::Type::IsTransparent(pNodeDesc->m_Type) == false, "Reroutes, portals and sub-graph boundaries are resolved by the node manager and never become AST nodes");
 
   if (bImplicitOnly && !pNodeDesc->m_bImplicitExecution)
     return nullptr;
+
+  CurrentNodeScope nodeScope(pObject);
 
   auto& astNode = CreateAstNode(pNodeDesc->m_Type, FinalizeDataType(m_NodeManager.GetDeductedType(pObject)), pNodeDesc->m_bImplicitExecution);
   astNode.m_pObject = pObject;
@@ -572,8 +686,12 @@ void plVisualScriptCompiler::MarkAsCoroutine(AstNode* pEntryAstNode)
     case plVisualScriptNodeDescription::Type::MessageHandler:
       pEntryAstNode->m_Type = plVisualScriptNodeDescription::Type::MessageHandler_Coroutine;
       break;
+    case plVisualScriptNodeDescription::Type::FunctionEntry:
+      pEntryAstNode->m_Type = plVisualScriptNodeDescription::Type::FunctionEntry_Coroutine;
+      break;
     case plVisualScriptNodeDescription::Type::EntryCall_Coroutine:
     case plVisualScriptNodeDescription::Type::MessageHandler_Coroutine:
+    case plVisualScriptNodeDescription::Type::FunctionEntry_Coroutine:
       // Already a coroutine
       break;
       PL_DEFAULT_CASE_NOT_IMPLEMENTED;
@@ -605,6 +723,8 @@ void plVisualScriptCompiler::AddConstantDataInput(AstNode& node, const plVariant
 
 plResult plVisualScriptCompiler::AddConstantDataInput(AstNode& node, const plDocumentObject* pObject, const plVisualScriptPin* pPin, plVisualScriptDataType::Enum dataType)
 {
+  CurrentNodeScope nodeScope(pObject);
+
   plStringView sPropertyName = pPin->HasDynamicPinProperty() ? pPin->GetDynamicPinProperty() : pPin->GetName();
 
   plVariant value = pObject->GetTypeAccessor().GetValue(sPropertyName);
@@ -617,6 +737,12 @@ plResult plVisualScriptCompiler::AddConstantDataInput(AstNode& node, const plDoc
   if (value.IsA<plUuid>())
   {
     value = 0;
+  }
+
+  // pins created from declarations (calls, returns, sub-graph boundaries) have no value property: an unconnected one carries the type's default
+  if (value.IsValid() == false && dataType != plVisualScriptDataType::Variant)
+  {
+    value = plReflectionUtils::GetDefaultVariantFromType(plVisualScriptDataType::GetVariantType(dataType));
   }
 
   plVisualScriptDataType::Enum valueDataType = plVisualScriptDataType::FromVariantType(value.GetType());
@@ -821,7 +947,7 @@ plVisualScriptCompiler::AstNode* plVisualScriptCompiler::BuildExecutionFlow(cons
     AstNode* pAstNode = nullptr;
     PL_VERIFY(m_CompilationState.m_ExecObjectToAstNode.TryGetValue(pObject, pAstNode), "Implementation error");
 
-    if (plVisualScriptNodeDescription::Type::MakesOuterCoroutine(pAstNode->m_Type))
+    if (plVisualScriptNodeDescription::Type::MakesOuterCoroutine(pAstNode->m_Type) || pAstNode->m_bIsCoroutineCall)
     {
       MarkAsCoroutine(pEntryAstNode);
     }
@@ -829,15 +955,18 @@ plVisualScriptCompiler::AstNode* plVisualScriptCompiler::BuildExecutionFlow(cons
     m_NodeManager.GetOutputExecutionPins(pObject, pins);
     for (auto pPin : pins)
     {
-      auto connections = m_NodeManager.GetConnections(*pPin);
-      if (connections.IsEmpty() || pPin->SplitExecution())
+      // reroutes, portals and sub-graph boundaries are looked through here
+      const plVisualScriptPin* pTargetPin = nullptr;
+      if (m_NodeManager.ResolveExecTarget(*pPin, pTargetPin).Failed())
+        return nullptr;
+
+      if (pTargetPin == nullptr || pPin->SplitExecution())
       {
         pAstNode->m_ExecOutputs.PushBack({nullptr});
         continue;
       }
 
-      PL_ASSERT_DEV(connections.GetCount() == 1, "Output execution pins should only have one connection");
-      const plDocumentObject* pNextObject = connections[0]->GetTargetPin().GetParent();
+      const plDocumentObject* pNextObject = pTargetPin->GetParent();
 
       AstNode* pNextAstNode;
       if (m_CompilationState.m_ExecObjectToAstNode.TryGetValue(pNextObject, pNextAstNode) == false)
@@ -901,6 +1030,8 @@ plResult plVisualScriptCompiler::BuildDataStack(AstNode* pEntryAstNode, AstNode*
 
     objectStack.PopBack();
 
+    CurrentNodeScope nodeScope(pObject);
+
     AstNode* pAstNode = nullptr;
     PL_VERIFY(m_CompilationState.m_DataObjectToAstNode.TryGetValue(pObject, pAstNode), "Implementation error");
 
@@ -954,8 +1085,11 @@ plResult plVisualScriptCompiler::BuildDataStack(AstNode* pEntryAstNode, AstNode*
           return PL_FAILURE;
         }
 
-        auto connections = m_NodeManager.GetConnections(*pPin);
-        if (pPin->IsRequired() && targetDataType != plVisualScriptDataType::GameObject && connections.IsEmpty())
+        // reroutes, portals and sub-graph boundaries are looked through here
+        const plVisualScriptPin* pResolvedSourcePin = nullptr;
+        PL_SUCCEED_OR_RETURN(m_NodeManager.ResolveDataSource(*pPin, pResolvedSourcePin));
+
+        if (m_NodeManager.IsPinRequired(*pPin) && targetDataType != plVisualScriptDataType::GameObject && pResolvedSourcePin == nullptr)
         {
           plLog::Error("Required input '{}' for '{}' is not connected", pPin->GetName(), GetNiceTypeName(pObject));
           return PL_FAILURE;
@@ -963,7 +1097,7 @@ plResult plVisualScriptCompiler::BuildDataStack(AstNode* pEntryAstNode, AstNode*
 
         auto dataInputType = bArrayInput ? plVisualScriptDataType::Variant : FinalizeDataType(targetDataType);
 
-        if (connections.IsEmpty())
+        if (pResolvedSourcePin == nullptr)
         {
           if (plVisualScriptDataType::IsPointer(dataInputType))
           {
@@ -986,7 +1120,7 @@ plResult plVisualScriptCompiler::BuildDataStack(AstNode* pEntryAstNode, AstNode*
         }
         else
         {
-          auto& sourcePin = static_cast<const plVisualScriptPin&>(connections[0]->GetSourcePin());
+          auto& sourcePin = *pResolvedSourcePin;
           const plDocumentObject* pSourceObject = sourcePin.GetParent();
           auto pSourceNodeDesc = plVisualScriptNodeRegistry::GetSingleton()->GetNodeDescForType(pSourceObject->GetType());
 
@@ -1061,12 +1195,14 @@ plResult plVisualScriptCompiler::BuildDataStack(AstNode* pEntryAstNode, AstNode*
       const bool bValidCandidate = [&]()
       {
         m_NodeManager.GetInputDataPins(nextNodeCandiate->m_pObject, pins);
+        plHybridArray<const plVisualScriptPin*, 4> sourcePins;
         for (auto pPin : pins)
         {
-          auto connections = m_NodeManager.GetConnections(*pPin);
-          for (auto pConnection : connections)
+          // the real sources behind reroutes, portals and sub-graph boundaries
+          m_NodeManager.GetLogicalSources(*pPin, sourcePins);
+          for (auto pSourcePin : sourcePins)
           {
-            const plDocumentObject* pSourceObject = pConnection->GetSourcePin().GetParent();
+            const plDocumentObject* pSourceObject = pSourcePin->GetParent();
 
             AstNode* pSourceAstNode = nullptr;
             if (!m_CompilationState.m_DataObjectToAstNode.TryGetValue(pSourceObject, pSourceAstNode))
@@ -1578,6 +1714,163 @@ plResult plVisualScriptCompiler::ReplaceUnsupportedNodes(AstNode* pEntryAstNode)
   return PL_SUCCESS;
 }
 
+bool plVisualScriptCompiler::IsCoroutineFunction(plStringView sFunctionName)
+{
+  const plString sKey = sFunctionName;
+
+  bool bResult = false;
+  if (m_CoroutineFunctionCache.TryGetValue(sKey, bResult))
+    return bResult;
+
+  plHashSet<const plDocumentObject*> visitedEntries;
+  bResult = IsCoroutineEntry(m_NodeManager.FindFunctionEntry(sFunctionName), visitedEntries);
+
+  m_CoroutineFunctionCache.Insert(sKey, bResult);
+  return bResult;
+}
+
+bool plVisualScriptCompiler::IsCoroutineEntry(const plDocumentObject* pEntryObject, plHashSet<const plDocumentObject*>& inout_visitedEntries)
+{
+  if (pEntryObject == nullptr || inout_visitedEntries.Insert(pEntryObject))
+    return false;
+
+  plHybridArray<const plDocumentObject*, 64> nodeStack;
+  nodeStack.PushBack(pEntryObject);
+
+  plHashSet<const plDocumentObject*> visitedNodes;
+  plHybridArray<const plVisualScriptPin*, 16> pins;
+  plHybridArray<const plVisualScriptPin*, 8> targetPins;
+
+  while (nodeStack.IsEmpty() == false)
+  {
+    const plDocumentObject* pNode = nodeStack.PeekBack();
+    nodeStack.PopBack();
+
+    const auto type = m_NodeManager.GetNodeType(pNode);
+    if (plVisualScriptNodeDescription::Type::MakesOuterCoroutine(type))
+      return true;
+
+    if (type == plVisualScriptNodeDescription::Type::Builtin_CallLibrary && m_NodeManager.IsCoroutine(pNode))
+      return true;
+
+    if (type == plVisualScriptNodeDescription::Type::Builtin_Call)
+    {
+      plString sCallee = pNode->GetTypeAccessor().GetValue("Function").ConvertTo<plString>();
+      if (IsCoroutineEntry(m_NodeManager.FindFunctionEntry(sCallee), inout_visitedEntries))
+        return true;
+    }
+
+    m_NodeManager.GetOutputExecutionPins(pNode, pins);
+    for (auto pPin : pins)
+    {
+      if (pPin->SplitExecution())
+        continue;
+
+      m_NodeManager.GetLogicalTargets(*pPin, targetPins);
+      for (auto pTargetPin : targetPins)
+      {
+        const plDocumentObject* pTargetNode = pTargetPin->GetParent();
+        if (visitedNodes.Insert(pTargetNode) == false)
+          nodeStack.PushBack(pTargetNode);
+      }
+    }
+  }
+
+  return false;
+}
+
+plResult plVisualScriptCompiler::InsertImplicitReturn(AstNode* pEntryAstNode, const plDocumentObject* pEntryObject)
+{
+  // The declared outputs of the function decide the inputs of the implicit return
+  plHybridArray<plEnum<plVisualScriptDataType>, 8> outputTypes;
+  {
+    auto& typeAccessor = pEntryObject->GetTypeAccessor();
+    const plInt32 iCount = typeAccessor.GetCount("Outputs");
+    for (plInt32 i = 0; i < iCount; ++i)
+    {
+      plVariant declUuid = typeAccessor.GetValue("Outputs", i);
+      const plDocumentObject* pDecl = declUuid.IsA<plUuid>() ? m_NodeManager.GetObject(declUuid.Get<plUuid>()) : nullptr;
+      if (pDecl == nullptr)
+        continue;
+
+      plVariant typeVar = pDecl->GetTypeAccessor().GetValue("Type");
+      const auto pinType = typeVar.IsA<plInt64>() ? static_cast<plVisualScriptPinType::Enum>(typeVar.Get<plInt64>()) : plVisualScriptPinType::Default;
+      const auto dataType = plVisualScriptPinType::GetDataType(pinType);
+      if (dataType != plVisualScriptDataType::Invalid)
+        outputTypes.PushBack(dataType);
+    }
+  }
+
+  // Collect the dangling execution outputs first, the return node must not be visited by the traversal that finds them
+  struct DanglingOutput
+  {
+    PL_DECLARE_POD_TYPE();
+
+    AstNode* m_pNode = nullptr;
+    plUInt32 m_uiIndex = 0;
+  };
+  plHybridArray<DanglingOutput, 16> dangling;
+
+  plResult r = TraverseAstDepthFirst(pEntryAstNode,
+    [&](AstNode*& pAstNode)
+    {
+      if (pAstNode->m_Type == plVisualScriptNodeDescription::Type::Builtin_Return || pAstNode->m_Type == plVisualScriptNodeDescription::Type::Builtin_Jump)
+        return VisitorResult::Continue;
+
+      plHybridArray<const plVisualScriptPin*, 8> execPins;
+      if (pAstNode->m_pObject != nullptr)
+      {
+        m_NodeManager.GetOutputExecutionPins(pAstNode->m_pObject, execPins);
+      }
+
+      for (plUInt32 i = 0; i < pAstNode->m_ExecOutputs.GetCount(); ++i)
+      {
+        if (pAstNode->m_ExecOutputs[i].m_pTargetNode != nullptr)
+          continue;
+
+        // a split execution pin (e.g. the coroutine body of StartCoroutine) is compiled as its own function
+        if (i < execPins.GetCount() && execPins[i]->SplitExecution())
+          continue;
+
+        dangling.PushBack({pAstNode, i});
+      }
+
+      return VisitorResult::Continue;
+    });
+  PL_SUCCEED_OR_RETURN(r);
+
+  if (dangling.IsEmpty())
+    return PL_SUCCESS;
+
+  auto& returnNode = CreateAstNode(plVisualScriptNodeDescription::Type::Builtin_Return);
+  for (auto outputType : outputTypes)
+  {
+    const plVisualScriptDataType::Enum dataType = outputType;
+    plVariant defaultValue;
+    if (plVisualScriptDataType::IsPointer(dataType) == false && dataType != plVisualScriptDataType::Coroutine && dataType != plVisualScriptDataType::Variant)
+    {
+      defaultValue = plReflectionUtils::GetDefaultVariantFromType(plVisualScriptDataType::GetVariantType(dataType));
+    }
+
+    if (defaultValue.IsValid() == false || plVisualScriptDataType::FromVariantType(defaultValue.GetType()) != dataType)
+    {
+      // no constant exists for these; an invalid offset makes the runtime leave the caller's output untouched
+      auto& dataInput = returnNode.m_DataInputs.ExpandAndGetRef();
+      dataInput.m_DataOffset.m_uiType = dataType;
+      continue;
+    }
+
+    AddConstantDataInput(returnNode, defaultValue);
+  }
+
+  for (auto& d : dangling)
+  {
+    ConnectExecution(*d.m_pNode, returnNode, d.m_uiIndex);
+  }
+
+  return PL_SUCCESS;
+}
+
 plResult plVisualScriptCompiler::AssignInstanceVariables(AstNode* pEntryAstNode)
 {
   return TraverseAstDepthFirst(pEntryAstNode,
@@ -1809,14 +2102,17 @@ plResult plVisualScriptCompiler::CopyOutputsToInputs(AstNode* pEntryAstNode)
     });
 }
 
-plResult plVisualScriptCompiler::BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions)
+plResult plVisualScriptCompiler::BuildNodeDescriptions(AstNode* pEntryAstNode, plDynamicArray<plVisualScriptNodeDescription>& out_NodeDescriptions, plDynamicArray<plUuid>& out_NodeGuids)
 {
   plHashTable<const AstNode*, plUInt32> astNodeToNodeDescIndices;
   out_NodeDescriptions.Clear();
+  out_NodeGuids.Clear();
 
   auto CreateNodeDesc = [&](const AstNode& astNode, plUInt32& out_uiNodeDescIndex) -> plResult
   {
     out_uiNodeDescIndex = out_NodeDescriptions.GetCount();
+
+    out_NodeGuids.PushBack(astNode.m_pObject != nullptr ? astNode.m_pObject->GetGuid() : plUuid());
 
     auto& nodeDesc = out_NodeDescriptions.ExpandAndGetRef();
     nodeDesc.m_Type = astNode.m_Type;
@@ -1917,6 +2213,7 @@ plResult plVisualScriptCompiler::TraverseAstDepthFirst(AstNode* pEntryAstNode, p
 
     AstNode* pOldAstNode = pAstNode;
 
+    CurrentNodeScope nodeScope(pAstNode->m_pObject);
     VisitorResult r = func(pAstNode);
     if (r == VisitorResult::Error)
       return PL_FAILURE;
@@ -1999,6 +2296,7 @@ plResult plVisualScriptCompiler::TraverseAstTopologicalOrder(const AstNode* pEnt
 
     PL_VERIFY(m_CompilationState.m_VisitedNodes.Insert(pAstNode) == false, "");
 
+    CurrentNodeScope nodeScope(pAstNode->m_pObject);
     VisitorResult r = func(pAstNode);
     if (r == VisitorResult::Error)
       return PL_FAILURE;

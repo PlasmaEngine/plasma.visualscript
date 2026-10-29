@@ -12,7 +12,7 @@ public class EditorPluginVisualScriptModule : ModuleRules
         PlasmaPackageSdk.ConfigureAssetsBuiltIn(this, context);
         PlasmaPackageSdk.AddPackagePluginImport(this, context, "Source/VisualScriptPlugin", "plVisualScriptPlugin");
 
-        PlasmaPackageQt.ConfigureQtModule(this, context, "EditorPluginVisualScriptModule",
-            "Source/EditorPluginVisualScript", "Core", "Gui", "Widgets");
+        // The Functions panel is an editor UI content, and the shell's default arrangement uses its dock manager.
+        PlasmaPackageSdk.AddImportLibrary(this, context, "plEditorUi");
     }
 }

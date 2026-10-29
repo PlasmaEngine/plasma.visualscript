@@ -1,99 +1,94 @@
-#include <EditorFramework/Assets/AssetStatusIndicator.moc.h>
 #include <EditorPluginAssets/EditorPluginAssetsPCH.h>
 
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphQt.moc.h>
-#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.moc.h>
-#include <GuiFoundation/ActionViews/MenuBarActionMapView.moc.h>
-#include <GuiFoundation/ActionViews/ToolBarActionMapView.moc.h>
-#include <GuiFoundation/DockPanels/DocumentPanel.moc.h>
-#include <GuiFoundation/PropertyGrid/PropertyGridWidget.moc.h>
-#include <GuiFoundation/VisualGraph/View.moc.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptFunctionPanel.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraph.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptGraphView.h>
+#include <EditorPluginVisualScript/VisualScriptGraph/VisualScriptWindow.h>
+#include <GuiFoundation/EngineUi/EngineGraphView.h>
 
-plQtVisualScriptWindow::plQtVisualScriptWindow(plDocument* pDocument)
-  : plQtDocumentWindow(pDocument)
+plVisualScriptWindow::plVisualScriptWindow(plDocument* pDocument)
+  : plDocumentWindow(pDocument)
 {
+  SetMenuBarActions("VisualScriptAssetMenuBar");
+  SetToolBarActions("VisualScriptAssetToolBar");
 
-  // Menu Bar
-  {
-    plQtMenuBarActionMapView* pMenuBar = static_cast<plQtMenuBarActionMapView*>(menuBar());
-    plActionContext context;
-    context.m_sMapping = "VisualScriptAssetMenuBar";
-    context.m_pDocument = pDocument;
-    context.m_pWindow = this;
-    pMenuBar->SetActionContext(context);
-  }
+  CreateGraph();
 
-  // Tool Bar
-  {
-    plQtToolBarActionMapView* pToolBar = new plQtToolBarActionMapView("Toolbar", this);
-    plActionContext context;
-    context.m_sMapping = "VisualScriptAssetToolBar";
-    context.m_pDocument = pDocument;
-    context.m_pWindow = this;
-    pToolBar->SetActionContext(context);
-    pToolBar->setObjectName("VisualScriptAssetWindowToolBar");
-    addToolBar(pToolBar);
-  }
+  AddPropertiesPanel({"VisualScriptAssetDockWidget", "Properties", plEditorUiDockRole::Right});
 
-  {
-    m_pScene = new plQtVisualScriptNodeScene(this);
-    m_pScene->InitScene(static_cast<const plVisualGraphObjectManager*>(pDocument->GetObjectManager()));
+  // Functions panel: the event graph and one entry per function
+  m_pFunctionPanel = AddPanel<plVisualScriptFunctionPanel>({"VisualScriptFunctionsDockWidget", "Functions", plEditorUiDockRole::Left}, pDocument, GetGraph());
 
-    m_pView = new plQtVisualGraphView(this);
-    m_pView->SetScene(m_pScene);
-
-    plQtDocumentPanel* pCentral = new plQtDocumentPanel(this, pDocument);
-    pCentral->setObjectName("VisualScriptView");
-    pCentral->setWindowTitle("Script");
-    pCentral->setWidget(m_pView);
-
-    m_pDockManager->setCentralWidget(pCentral);
-  }
-
-  {
-    plQtDocumentPanel* pPropertyPanel = new plQtDocumentPanel(this, pDocument);
-    pPropertyPanel->setObjectName("VisualScriptAssetDockWidget");
-    pPropertyPanel->setWindowTitle("Properties");
-    pPropertyPanel->show();
-
-    plQtPropertyGridWidget* pPropertyGrid = new plQtPropertyGridWidget(pPropertyPanel, pDocument);
-
-    QWidget* pWidget = new QWidget();
-    pWidget->setObjectName("Group");
-    pWidget->setLayout(new QVBoxLayout());
-    pWidget->setContentsMargins(0, 0, 0, 0);
-
-    pWidget->layout()->setContentsMargins(0, 0, 0, 0);
-    pWidget->layout()->addWidget(new plQtAssetStatusIndicator((plAssetDocument*)GetDocument()));
-    pWidget->layout()->addWidget(pPropertyGrid);
-
-    pPropertyPanel->setWidget(pWidget, ads::CDockWidget::ForceNoScrollArea);
-
-    m_pDockManager->addDockWidgetTab(ads::RightDockWidgetArea, pPropertyPanel);
-  }
-
-  GetDocument()->GetSelectionManager()->m_Events.AddEventHandler(plMakeDelegate(&plQtVisualScriptWindow::SelectionEventHandler, this));
-
-  FinishWindowCreation();
+  GetDocument()->GetSelectionManager()->m_Events.AddEventHandler(plMakeDelegate(&plVisualScriptWindow::SelectionEventHandler, this));
 
   SelectionEventHandler(plSelectionManagerEvent());
+
+  // a library has no event graph worth looking at; open its first function
+  auto pManager = static_cast<const plVisualScriptNodeManager*>(pDocument->GetObjectManager());
+  if (pManager->m_bIsLibrary)
+  {
+    plHybridArray<const plDocumentObject*, 16> entries;
+    pManager->GetFunctionEntries(entries);
+    if (entries.IsEmpty() == false)
+    {
+      GetGraph()->NavigateToScope(entries[0]->GetGuid());
+    }
+  }
 }
 
-plQtVisualScriptWindow::~plQtVisualScriptWindow()
+plVisualScriptWindow::~plVisualScriptWindow()
 {
+  // the graph panel, which owns the controller, goes after this destructor's body
+  if (m_pController != nullptr)
+    m_pController->m_ScopeChanged.RemoveEventHandler(plMakeDelegate(&plVisualScriptWindow::OnScopeChanged, this));
+
   if (GetDocument() != nullptr)
   {
     GetDocument()->GetSelectionManager()->m_Events.RemoveEventHandler(
-      plMakeDelegate(&plQtVisualScriptWindow::SelectionEventHandler, this));
+      plMakeDelegate(&plVisualScriptWindow::SelectionEventHandler, this));
   }
 }
 
-void plQtVisualScriptWindow::SelectionEventHandler(const plSelectionManagerEvent& e)
+void plVisualScriptWindow::CreateGraph()
 {
-  if (GetDocument()->GetSelectionManager()->IsSelectionEmpty())
+  plUniquePtr<plVisualGraphController> pController = PL_DEFAULT_NEW(plVisualScriptGraphController);
+  pController->Init(static_cast<const plVisualGraphObjectManager*>(GetDocument()->GetObjectManager()));
+  m_pController = static_cast<plVisualScriptGraphController*>(pController.Borrow());
+  m_pController->m_ScopeChanged.AddEventHandler(plMakeDelegate(&plVisualScriptWindow::OnScopeChanged, this));
+
+  // the engine view draws the breadcrumbs itself
+  m_pGraph = AddPanel<plEditorUiGraphView>({"VisualScriptView", "Script"}, std::move(pController));
+  m_pController->SetView(m_pGraph);
+}
+
+plVisualScriptGraphHost* plVisualScriptWindow::GetGraph() const
+{
+  return m_pController;
+}
+
+void plVisualScriptWindow::OnScopeChanged(const plUuid& newScope)
+{
+  if (m_pFunctionPanel)
+    m_pFunctionPanel->SetCurrentScope(newScope);
+
+  if (m_pGraph)
+    m_pGraph->RequestFrameAll();
+}
+
+void plVisualScriptWindow::SelectionEventHandler(const plSelectionManagerEvent& e)
+{
+  auto pDocument = GetDocument();
+  auto pSelectionManager = pDocument->GetSelectionManager();
+  auto pManager = static_cast<const plVisualScriptNodeManager*>(pDocument->GetObjectManager());
+
+  // the dynamic enums of the property grid (portal names, function names, library functions) follow the selected node
+  const plDocumentObject* pSelected = pSelectionManager->GetSelection().IsEmpty() ? nullptr : pSelectionManager->GetSelection()[0];
+  pManager->RefreshDynamicEnums(pSelected);
+
+  if (pSelectionManager->IsSelectionEmpty())
   {
     // delayed execution
-    QTimer::singleShot(1,
+    m_Timers.Start(plTime::MakeZero(),
       [this]()
       {
         auto pDocument = GetDocument();
