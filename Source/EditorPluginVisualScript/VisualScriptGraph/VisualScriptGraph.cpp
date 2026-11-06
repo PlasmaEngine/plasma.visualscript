@@ -431,6 +431,53 @@ plStatus plVisualScriptNodeManager::InternalCanConnect(const plVisualGraphPin& s
   return plStatus(PL_SUCCESS);
 }
 
+plUInt8 plVisualScriptNodeManager::ScorePinMatch(const plVisualGraphPin& fromPin, const plVisualGraphPin& candidate) const
+{
+  const plVisualScriptPin& from = plStaticCast<const plVisualScriptPin&>(fromPin);
+  const plVisualScriptPin& other = plStaticCast<const plVisualScriptPin&>(candidate);
+
+  if (from.IsExecutionPin())
+    return plVisualGraphTemplateMatch::Exact;
+
+  // the dragged pin may already have a deduced type; the new node's pins only have their declared one
+  plVisualScriptDataType::Enum fromType = from.GetResolvedScriptDataType();
+  if (fromType == plVisualScriptDataType::Invalid)
+    fromType = from.GetScriptDataType();
+
+  const bool bFromOutput = from.GetType() == plVisualGraphPin::Type::Output;
+  const plVisualScriptDataType::Enum sourceType = bFromOutput ? fromType : other.GetScriptDataType();
+  const plVisualScriptDataType::Enum targetType = bFromOutput ? other.GetScriptDataType() : fromType;
+
+  if (sourceType == plVisualScriptDataType::Any || targetType == plVisualScriptDataType::Any || targetType == plVisualScriptDataType::AnyPointer)
+    return plVisualGraphTemplateMatch::Converts;
+
+  // CanConnect already checked typed pointers (derived classes) and enums (the same type)
+  if (sourceType == targetType)
+    return plVisualGraphTemplateMatch::Exact;
+
+  if (targetType == plVisualScriptDataType::String || targetType == plVisualScriptDataType::HashedString || targetType == plVisualScriptDataType::Variant)
+    return plVisualGraphTemplateMatch::AcceptsAnything;
+
+  if (plVisualScriptDataType::IsPointer(sourceType) && targetType == plVisualScriptDataType::Bool)
+    return plVisualGraphTemplateMatch::AcceptsAnything;
+
+  return plVisualGraphTemplateMatch::Converts;
+}
+
+plString plVisualScriptNodeManager::GetPinTypeName(const plVisualGraphPin& pin) const
+{
+  const plVisualScriptPin& scriptPin = plStaticCast<const plVisualScriptPin&>(pin);
+  if (scriptPin.IsExecutionPin())
+    return "Exec";
+
+  // reflected class names without the engine prefix: "plRigidBodyComponent" reads as "RigidBodyComponent"
+  plStringView sName = scriptPin.GetDataTypeName();
+  if (sName.StartsWith("pl") && sName.GetElementCount() > 2 && sName.GetStartPointer()[2] >= 'A' && sName.GetStartPointer()[2] <= 'Z')
+    sName.Shrink(2, 0);
+
+  return sName;
+}
+
 void plVisualScriptNodeManager::InternalCreatePins(const plDocumentObject* pObject, NodeInternal& ref_node)
 {
   auto pNodeDesc = plVisualScriptNodeRegistry::GetSingleton()->GetNodeDescForType(pObject->GetType());

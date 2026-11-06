@@ -75,6 +75,11 @@ public:
   plVisualScriptDataType::Enum GetDeductedType(const plVisualScriptPin& pin) const;
   plVisualScriptDataType::Enum GetDeductedType(const plDocumentObject* pObject) const;
 
+  /// Node palette ranking: the same data type (or a class the target derives from) is exact; pins that infer their
+  /// type and numeric or vector conversions convert; String, Variant and pointer-to-bool targets accept anything.
+  virtual plUInt8 ScorePinMatch(const plVisualGraphPin& fromPin, const plVisualGraphPin& candidate) const override;
+  virtual plString GetPinTypeName(const plVisualGraphPin& pin) const override;
+
   bool IsCoroutine(const plDocumentObject* pObject) const;
   bool IsLoop(const plDocumentObject* pObject) const;
 
